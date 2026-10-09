@@ -156,9 +156,40 @@ loss.
 
 ## Status
 
-Complete and tested: 123 tests pass, `cargo fmt` and `cargo clippy` are clean under
+Complete and tested: 130 tests pass, `cargo fmt` and `cargo clippy` are clean under
 `-D warnings`, and rustdoc builds without warnings. CI runs all of it on every
 push.
+
+**Tested against real hardware.** A DualShock 4 v2 arrived over Bluetooth and found
+four bugs that no unit test could have: all four produced clean data rather than
+an error, so nothing crashed and nothing looked wrong until the values were
+checked against physics.
+
+- The Bluetooth report id is `0x11`, not `0x01`. Only `0x01` was accepted, so
+  every Bluetooth frame was discarded and a connected pad presented as one that
+  never reports.
+- Bluetooth sticks sit at offset 3, not 4. At offset 4 the d-pad byte is read as
+  the right stick's X axis.
+- **The gyro and accelerometer were swapped.** With the pad lying still the
+  accelerometer read 0.003 g, which is not a state a pad can be in. Correct, it
+  reads 0.99 g.
+- A Bluetooth DS4 exposes several HID collections at once. The code opened the
+  first, which succeeds and then **blocks in `read()` forever**. Silent interfaces
+  are now identified and stepped over.
+
+That third bug is also why the mouse moved on its own: a wrong gyro offset reads
+hundreds of times too large and feeds straight into `SendInput`. Measured with the
+pad resting on a desk, the pointer moved **6 px in two seconds**; beforehand it was
+on track for thousands.
+
+Final measurement on the same pad: **529 reports at 755 Hz** over Bluetooth, 1.33 ms
+between frames.
+
+On method: the test fixtures are the bytes the device actually sent, and
+`cargo run -p padcore --bin capture-fixture` regenerates them. The tests assert
+physical plausibility rather than byte equality — a still pad reads about 1 g, and
+neither 0 g nor 4 g is a state a pad can be in. A fixture typed by hand is exactly
+what ends up enshrining the bug.
 
 One thing is **not** verified: how the main interface actually looks. Every
 egui/glow window on the machine this was developed on renders as a solid white
