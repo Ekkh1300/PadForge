@@ -1,0 +1,39 @@
+[package]
+name = "padforge"
+description = "PadForge - give your PlayStation controller a native voice on Windows."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "padforge"
+path = "src/main.rs"
+
+[dependencies]
+padcore = { path = "../padcore" }
+
+egui = "0.36"
+eframe = { version = "0.36", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "accesskit",
+] }
+egui_extras = { version = "0.36", default-features = false }
+
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+tray-icon = "0.21"
+rfd = "0.15"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }

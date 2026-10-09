@@ -1,0 +1,16 @@
+# Normalise line endings on checkin, so a Windows checkout and a Linux one do
+# not each rewrite every file and produce a diff of the entire repository.
+* text=auto eol=lf
+
+# The installer is a Windows batch file. cmd requires CRLF: a batch file with
+# bare LF breaks on labels and multi-line constructs, which is exactly the kind
+# of failure that only shows up on someone else's machine.
+*.cmd text=auto eol=crlf
+*.bat text=auto eol=crlf
+*.ps1 text=auto eol=crlf
+
+# Binary assets, should any be added.
+*.png binary
+*.ico binary
+*.exe binary
+*.dll binary

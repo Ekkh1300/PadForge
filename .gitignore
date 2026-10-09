@@ -1,0 +1,22 @@
+# Build output
+/target
+
+# Release artefacts. build-installer.cmd regenerates dist/PadForge-Setup.exe.
+/dist
+
+# Binaries and debug symbols
+*.exe
+*.pdb
+*.dll
+*.rlib
+
+# Editor and OS noise
+**/*.rs.bk
+*~
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Logs and captures written next to the source during debugging
+*.log

@@ -1,0 +1,29 @@
+[package]
+name = "padforge-installer"
+description = "PadForge installer: ships the app, shortcuts, and an uninstaller."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "padforge-installer"
+path = "src/main.rs"
+
+[dependencies]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    # CloseHandle / INVALID_HANDLE_VALUE
+    "Win32_Foundation",
+    # CoCreateInstance / CoInitializeEx, and the ShellLink COM class
+    "Win32_System_Com",
+    # The per-user uninstall and Run keys
+    "Win32_System_Registry",
+    # CreateFileW, used to probe for the ViGEmBus device. This pulls in
+    # Win32_Security, which CreateFileW's SECURITY_ATTRIBUTES argument requires.
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+] }
