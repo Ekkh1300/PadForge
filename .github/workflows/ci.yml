@@ -57,6 +57,21 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      # The icon is committed so the build needs no Python, but this proves the
+      # generator still reproduces it. A mismatch means the committed file was
+      # hand-edited and will drift.
+      - name: The committed icon matches its generator
+        shell: pwsh
+        run: |
+          $before = (Get-FileHash tools\padforge.ico -Algorithm SHA256).Hash
+          python tools\make_icon.py
+          $after = (Get-FileHash tools\padforge.ico -Algorithm SHA256).Hash
+          if ($before -ne $after) {
+            "tools/padforge.ico is stale; run python tools/make_icon.py and commit it" | Out-Host
+            exit 1
+          }
+          "icon is up to date" | Out-Host
+
       - name: rustfmt
         run: cargo fmt --all -- --check
 

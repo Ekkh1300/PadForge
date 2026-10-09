@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://github.com/Ekkh1300/PadForge/releases/download/v1.0.0/icon-512.png" alt="PadForge" width="128">
+</p>
+
 ## PadForge ۱.۰.۰
 
 دسته‌ی DualShock 4 را به بازی‌های ویندوز به‌عنوان یک دسته‌ی Xbox 360 معرفی می‌کند.
@@ -7,6 +11,10 @@
 دسته‌ی مجازی Xbox 360 منتشر می‌کند که هر بازی از قبل می‌داند چطور با آن کار کند.
 
 ### نصب
+
+<p align="center">
+  <img src="https://github.com/Ekkh1300/PadForge/releases/download/v1.0.0/installer.png" alt="پنجره نصب PadForge" width="420">
+</p>
 
 `PadForge-Setup.exe` را اجرا کنید. یک پنجره باز می‌شود: محل نصب را انتخاب کنید و
 تیک بزنید که شورتکات دسکتاپ و اجرای خودکار ساخته شود یا نه.
@@ -61,6 +69,12 @@
 حدود ۱۶۰۰ برابر زیر بودجه‌ی فریم. مسیر داغ همچنین **صفر تخصیص حافظه** را بعد از گرم
 شدن تست می‌کند، چون تخصیص در هر گزارش به‌صورت جیتر در نخ HID خودش را نشان می‌دهد،
 خیلی قبل از آنکه در اعداد توان دیده شود.
+
+آیکون در هر اندازه‌ای که واقعاً دیده می‌شود — از نوار عنوان تا فهرست برنامه‌ها:
+
+<p align="center">
+  <img src="https://github.com/Ekkh1300/PadForge/releases/download/v1.0.0/icon-sizes.png" alt="آیکون در اندازه‌های مختلف" width="480">
+</p>
 
 ### وضعیت
 

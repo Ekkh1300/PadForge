@@ -56,18 +56,18 @@ fn main() {
         .current_dir(&tools_dir)
         .status();
 
+    // A missing icon is cosmetic and a missing windres is a machine difference,
+    // so neither is worth failing the build over. Panicking here broke CI: the
+    // ICO had been left out of the repository because it is generated, and the
+    // check step could not build anything at all over a cosmetic resource.
     match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => panic!("windres failed with {s}"),
-        Err(e) => {
-            // windres ships with MinGW-w64. Without it there is no icon, but
-            // that is not worth failing the build over.
-            println!("cargo:warning=windres could not be run ({e}); the binary will have no icon");
-            return;
+        Ok(s) if s.success() => {
+            // The documented way to get a non-Rust object into the link.
+            println!("cargo:rustc-link-arg={}", object.display());
         }
+        Ok(s) => println!("cargo:warning=windres failed with {s}; the binary will have no icon"),
+        Err(e) => println!(
+            "cargo:warning=windres could not be run ({e}); the binary will have no icon"
+        ),
     }
-
-    // Ask cargo to pass the object to the linker. This is the documented way to
-    // get a non-Rust object file into the link.
-    println!("cargo:rustc-link-arg={}", object.display());
 }

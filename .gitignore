@@ -4,17 +4,19 @@
 # Release artefacts. build-installer.cmd regenerates dist/PadForge-Setup.exe.
 /dist
 
-# Generated icon. tools/make_icon.py rebuilds it from source, so 30 KB of
-# pixels does not belong in the history. The ICO that windres actually reads is
-# a copy of it and is likewise generated.
+# The scratch copy make_icon.py writes. The ICO that windres reads is
+# tools/padforge.ico, which is committed: CI has no Python with Pillow, so the
+# build has to work from a file that is actually in the repository.
 tools/assets/
-tools/padforge.ico
 
 # Debug screenshots taken next to the source during development.
 *.log
 docs/*.png
-# ...except the one the README shows.
+# ...except the ones the README and the release page show.
 !docs/installer.png
+!docs/icon-128.png
+!docs/icon-512.png
+!docs/icon-sizes.png
 
 # Binaries and debug symbols
 *.exe
