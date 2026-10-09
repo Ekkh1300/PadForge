@@ -66,8 +66,8 @@ fn main() {
             println!("cargo:rustc-link-arg={}", object.display());
         }
         Ok(s) => println!("cargo:warning=windres failed with {s}; the binary will have no icon"),
-        Err(e) => println!(
-            "cargo:warning=windres could not be run ({e}); the binary will have no icon"
-        ),
+        Err(e) => {
+            println!("cargo:warning=windres could not be run ({e}); the binary will have no icon")
+        }
     }
 }
