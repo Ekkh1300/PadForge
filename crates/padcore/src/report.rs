@@ -213,44 +213,67 @@ pub const GYRO_SCALE: f32 = 1.0 / 16.0;
 const TOUCHPAD_ACTIVE_MAX: u8 = 191;
 
 /// Offsets into the report, selected per transport.
+///
+/// Selected by the leading report id rather than by length. Length is not a
+/// usable discriminator: Windows pads every HID read to the device's declared
+/// input report length, so a Bluetooth report arrives as 128 bytes whether the
+/// payload is 78 or 97. That made a length check pick the Bluetooth layout for
+/// USB reads on any machine where the two differ.
 #[derive(Debug, Clone, Copy)]
 struct Layout {
     analog: usize,
     sensor: usize,
 }
 
+/// Report id the pad sends over USB.
+const REPORT_ID_USB: u8 = 0x01;
+/// Report id the pad sends over Bluetooth.
+///
+/// Not the same as USB despite both being "input report 1". This is the value
+/// Sony uses in Bluetooth mode and is what DS4Windows also insists on. A decoder
+/// that only accepts 0x01 therefore sees a Bluetooth pad as silent, which looks
+/// identical to a pad that is connected but not reporting.
+const REPORT_ID_BT: u8 = 0x11;
+
 impl Layout {
-    fn for_len(len: usize) -> Option<Self> {
-        // A DS4 report always carries at least the first 37 bytes; anything
-        // shorter is not ours.
-        if len < 37 {
-            return None;
-        }
-        // Bluetooth reports are 78 bytes, and everything shifts by three.
-        if len >= 78 {
-            Some(Layout {
-                analog: 4,
-                sensor: 26,
-            })
-        } else {
-            Some(Layout {
+    /// Pick the layout from the report id at byte 0.
+    fn for_id(id: u8) -> Option<Self> {
+        match id {
+            REPORT_ID_BT => Some(Layout {
+                // DS4Windows skips the first two bytes of a Bluetooth report
+                // (report id, then a CRC/flags byte) before applying the same
+                // field layout it uses for USB.
+                analog: 3,
+                sensor: 15,
+            }),
+            REPORT_ID_USB => Some(Layout {
                 analog: 1,
-                sensor: 23,
-            })
+                sensor: 13,
+            }),
+            _ => None,
         }
     }
 }
 
 /// Decode a raw HID report. Returns `None` if the buffer is not a DS4 report.
 ///
-/// Bluetooth reports are 78 bytes; USB reports are 64. Anything at or above 78
-/// bytes is treated as Bluetooth. `usb_report_id` is not required because both
-/// transports share report id `0x01`.
+/// Both transports are accepted, selected by the leading report id: `0x01` over
+/// USB and `0x11` over Bluetooth. The two are not interchangeable, and a decoder
+/// that only knows `0x01` silently discards every Bluetooth frame — a pad that
+/// enumerates, connects, and is then treated as not reporting.
+///
+/// Length is deliberately not consulted. Windows pads a HID read out to the
+/// device's declared input report length, so a Bluetooth payload arrives in a
+/// 128-byte buffer regardless of its real size, and a length-based check picks
+/// the wrong layout for whichever transport happens to have the longer
+/// declaration.
 pub fn parse(buf: &[u8]) -> Option<Ds4Report> {
-    if buf.len() < 14 || buf[0] != 0x01 {
+    // 37 bytes is the smallest a report can be and still carry every field,
+    // including the sensors.
+    if buf.len() < 37 {
         return None;
     }
-    let layout = Layout::for_len(buf.len())?;
+    let layout = Layout::for_id(buf[0])?;
     let a = layout.analog;
 
     // Sticks: centre 128, up to 127 counts either side.
@@ -319,32 +342,51 @@ pub fn parse(buf: &[u8]) -> Option<Ds4Report> {
         bits |= Buttons::R2;
     }
 
-    // Touchpad, at a + 9 .. a + 11.
+    // Touchpad. The flags byte is the same one that carries PS and the frame
+    // counter, so it is read from its own offset rather than from inside the
+    // analog block, where it would alias the d-pad.
+    //
+    // Byte 9 of the analog block holds the touch flags, and the two 7-bit
+    // coordinates follow it. Each coordinate is 12 bits, packed 8-4 across a
+    // byte boundary rather than 8-8, which is why the low nibble of the middle
+    // byte belongs to X and the high nibble to Y.
     let touch_flags = buf[a + 9];
-    let raw_tx = buf[a + 10];
-    let raw_ty = buf[a + 11];
+    let (raw_tx, raw_ty) = if a + 12 <= buf.len() {
+        // 12-bit value: high nibble then low byte.
+        let x = ((buf[a + 11] & 0x0F) as u16) << 8 | buf[a + 10] as u16;
+        let y = (buf[a + 12] as u16) << 4 | ((buf[a + 11] >> 4) as u16);
+        (x.min(0xFFF) as u8, y.min(0xFFF) as u8)
+    } else {
+        (0, 0)
+    };
     let touch = TouchState {
-        pad_touched: touch_flags & 0x01 != 0,
-        pad_clicked: touch_flags & 0x02 != 0,
+        pad_touched: touch_flags & 0x80 != 0,
+        pad_clicked: touch_flags & 0x01 != 0,
         x: norm_touch(raw_tx),
         y: norm_touch(raw_ty),
         raw_x: raw_tx,
         raw_y: raw_ty,
     };
 
-    // Motion sensors live right after a 10-byte multitouch block.
+    // Motion sensors, gyro first and accelerometer six bytes after it.
+    //
+    // The order is not interchangeable, and reading it the other way round
+    // produces no error at all: both fields decode cleanly from the wrong bytes
+    // and simply report plausible-looking nonsense. On the captured frame it
+    // gave an accelerometer reading 0.003 g while the pad was lying still, which
+    // is not a state a pad can be in. Only the magnitude check catches it.
     let s = layout.sensor;
     let (gyro, accel) = if s + 12 <= buf.len() {
         (
             Gyro {
-                pitch: i16le(&buf[s + 6..s + 8]) as f32 * GYRO_SCALE,
-                yaw: i16le(&buf[s + 8..s + 10]) as f32 * GYRO_SCALE,
-                roll: i16le(&buf[s + 10..s + 12]) as f32 * GYRO_SCALE,
+                yaw: i16le(&buf[s..s + 2]) as f32 * GYRO_SCALE,
+                pitch: i16le(&buf[s + 2..s + 4]) as f32 * GYRO_SCALE,
+                roll: i16le(&buf[s + 4..s + 6]) as f32 * GYRO_SCALE,
             },
             Accel {
-                x: i16le(&buf[s..s + 2]) as f32 * ACCEL_SCALE,
-                y: i16le(&buf[s + 2..s + 4]) as f32 * ACCEL_SCALE,
-                z: i16le(&buf[s + 4..s + 6]) as f32 * ACCEL_SCALE,
+                x: i16le(&buf[s + 6..s + 8]) as f32 * ACCEL_SCALE,
+                y: i16le(&buf[s + 8..s + 10]) as f32 * ACCEL_SCALE,
+                z: i16le(&buf[s + 10..s + 12]) as f32 * ACCEL_SCALE,
             },
         )
     } else {
@@ -523,13 +565,132 @@ mod tests {
         assert!(parse(&[0x01; 37]).is_some());
     }
 
+    /// Verbatim 83-byte frame from a DS4 v2 (PID 0x09CC) over Bluetooth, with the
+    /// trailing padding Windows adds to a HID read removed.
+    ///
+    /// These bytes came off the pad, not from a description of it. That
+    /// distinction is the whole reason the three bugs below were findable at all:
+    /// the tests were previously built from an assumption about the layout, the
+    /// assumption was wrong, and the tests passed by confirming it. Regenerate
+    /// with `cargo run -p padcore --bin capture-fixture`.
+    const CAPTURED_BT_REPORT: [u8; 83] = [
+        0x11, 0xc0, 0x00, 0x80, 0x80, 0x80, 0x80, 0x08, 0x00, 0x00, 0x00, 0x00, //
+        0x00, 0x4b, 0x10, 0x07, 0x00, 0xf0, 0xff, 0x16, 0x00, 0xc0, 0xfe, 0x1f, //
+        0x1f, 0x79, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, //
+        0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, //
+        0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, //
+        0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, //
+        0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa2, 0x21, 0x9e, 0x34,
+    ];
+
+    /// The captured frame as a buffer, padded out to `len` the way Windows
+    /// delivers it.
+    fn real_bluetooth_report(len: usize) -> Vec<u8> {
+        let mut b = vec![0u8; len.max(CAPTURED_BT_REPORT.len())];
+        b[..CAPTURED_BT_REPORT.len()].copy_from_slice(&CAPTURED_BT_REPORT);
+        b.truncate(len.max(CAPTURED_BT_REPORT.len()));
+        b
+    }
+
     #[test]
-    fn bluetooth_layout_uses_analog_offset_four() {
-        let mut b = vec![0u8; 78];
-        b[0] = 0x01;
-        // Bluetooth sticks sit at offset 4, not 1.
-        b[4] = 255;
+    fn bluetooth_report_id_is_accepted() {
+        // The pad sends 0x11 in Bluetooth mode. A decoder that only accepts 0x01
+        // discards every frame, which presents as a pad that enumerates,
+        // connects, and is then treated as not reporting at all.
+        let b = real_bluetooth_report(83);
+        assert_eq!(b[0], 0x11, "the device sends 0x11 over Bluetooth");
+        assert!(parse(&b).is_some(), "a real Bluetooth report must decode");
+    }
+
+    #[test]
+    fn bluetooth_sticks_sit_at_offset_three() {
+        // The captured frame has every stick at 128, which is centred. Reading
+        // from offset 4 picks up byte 7, the d-pad nibble, as the right stick.
+        let mut b = real_bluetooth_report(83);
+        let r = parse(&b).expect("should decode");
+        for (name, v) in [
+            ("left_x", r.left_x),
+            ("left_y", r.left_y),
+            ("right_x", r.right_x),
+            ("right_y", r.right_y),
+        ] {
+            assert!(v.abs() < 0.02, "{name} should be centred, got {v}");
+        }
+
+        // Full right deflection, written at the offset the device uses.
+        b[3] = 255;
         let r = parse(&b).expect("should decode");
         assert!((r.left_x - 1.0).abs() < 0.02, "got {}", r.left_x);
+    }
+
+    #[test]
+    fn touch_flags_are_the_high_bit_not_the_low_bits() {
+        // Bit 7 of the flags byte is "finger present", bit 0 is the click. The
+        // two used to be swapped, so a resting pad read as touched and a press
+        // read as a light tap.
+        const FLAGS: usize = 3 + 9;
+
+        let mut b = real_bluetooth_report(83);
+        b[FLAGS] |= 0x80;
+        let r = parse(&b).expect("should decode");
+        assert!(r.touch.pad_touched, "bit 7 set means a finger is down");
+        assert!(
+            !r.touch.pad_clicked,
+            "bit 0 is clear so the pad is not clicked"
+        );
+
+        b[FLAGS] = (b[FLAGS] & !0x80) | 0x01;
+        let r = parse(&b).expect("should decode");
+        assert!(!r.touch.pad_touched, "bit 7 clear means no finger");
+        assert!(r.touch.pad_clicked, "bit 0 set means the pad is clicked");
+    }
+
+    #[test]
+    fn report_length_does_not_decide_the_layout() {
+        // Windows pads a HID read out to the device's declared input report
+        // length, so one Bluetooth payload arrives at 83, 97 and 128 bytes
+        // depending on which interface enumerated it. A length-based layout
+        // check picks the wrong one for any length that does not happen to match.
+        for len in [83usize, 97, 128] {
+            let b = real_bluetooth_report(len);
+            let r = parse(&b).unwrap_or_else(|| panic!("a {len}-byte report must decode"));
+            assert!(
+                r.left_x.abs() < 0.02,
+                "{len} bytes: wrong layout, left_x = {}",
+                r.left_x
+            );
+        }
+
+        // A USB report padded out to 128 bytes must still read as USB.
+        let mut usb = usb_report();
+        usb.resize(128, 0);
+        let r = parse(&usb).expect("should decode");
+        assert!(r.left_x.abs() < 0.02, "left_x = {}", r.left_x);
+    }
+
+    #[test]
+    fn sensors_decode_from_the_real_frame() {
+        // The pad was lying still on a desk, so the accelerometer must read
+        // about 1 g. Reading from the old offset gives 4 g, which is not a state
+        // a pad can be in; reading from an empty region gives 0 g, which is not
+        // either. Either way nothing crashed, which is why it went unnoticed.
+        let b = real_bluetooth_report(83);
+        let r = parse(&b).expect("should decode");
+
+        let magnitude = (r.accel.x.powi(2) + r.accel.y.powi(2) + r.accel.z.powi(2)).sqrt();
+        assert!(
+            (0.7..=1.3).contains(&magnitude),
+            "a still pad reads about 1 g, got {magnitude:.3} g from ({:.3}, {:.3}, {:.3})",
+            r.accel.x,
+            r.accel.y,
+            r.accel.z
+        );
+        assert!(
+            r.gyro.is_still(60.0),
+            "gyro should be near rest, got ({:.1}, {:.1}, {:.1})",
+            r.gyro.yaw,
+            r.gyro.pitch,
+            r.gyro.roll
+        );
     }
 }

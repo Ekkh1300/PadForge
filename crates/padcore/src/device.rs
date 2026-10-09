@@ -39,11 +39,85 @@ impl DeviceInfo {
             self.product.trim().to_string()
         };
         match self.serial.as_deref() {
-            Some(s) if s.len() >= 4 => format!("{base} Â· {}", &s[s.len() - 4..]),
-            Some(s) => format!("{base} Â· {s}"),
+            Some(s) if s.chars().count() >= 4 => {
+                let tail: String = s.chars().skip(s.chars().count() - 4).collect();
+                format!("{base} - {tail}")
+            }
+            Some(s) => format!("{base} - {s}"),
             None => base,
         }
     }
+}
+
+/// Everything the HID layer can see, with no filtering at all.
+///
+/// This exists to answer one question when a pad will not connect: is the
+/// filter wrong, or is the device not being enumerated? Those look identical
+/// from the outside and have nothing in common as fixes, so the diagnostic needs
+/// to say which one it is.
+pub fn probe_all_devices() -> Vec<RawDeviceInfo> {
+    let api = match hidapi::HidApi::new() {
+        Ok(a) => a,
+        Err(e) => {
+            warn!("could not initialise the HID API: {e}");
+            return Vec::new();
+        }
+    };
+
+    api.device_list()
+        .map(|d| RawDeviceInfo {
+            path: d.path().to_string_lossy().into_owned(),
+            vendor_id: d.vendor_id(),
+            product_id: d.product_id(),
+            usage_page: d.usage_page(),
+            usage: d.usage(),
+            interface_number: d.interface_number(),
+            bus_type: format!("{:?}", d.bus_type()),
+            serial: d.serial_number().unwrap_or_default().to_string(),
+            manufacturer: d.manufacturer_string().unwrap_or_default().to_string(),
+            product: d.product_string().unwrap_or_default().to_string(),
+        })
+        .collect()
+}
+
+/// One entry from [`probe_all_devices`].
+///
+/// hidapi exposes no report-length accessors on this version, so the sizes are
+/// absent. They are not needed: which interface is the gamepad is decided by the
+/// usage page and usage, and the report size is fixed per transport.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RawDeviceInfo {
+    pub path: String,
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub usage_page: u16,
+    pub usage: u16,
+    pub interface_number: i32,
+    /// `hidapi::BusType`, rendered. Kept as text because the probe only reports
+    /// it; nothing branches on it.
+    pub bus_type: String,
+    pub serial: String,
+    pub manufacturer: String,
+    pub product: String,
+}
+
+/// The pads PadForge would actually connect to, applying the same filter the
+/// reader thread uses.
+///
+/// Sharing the filter with the reader matters: a probe that duplicates the
+/// predicate can agree with itself while disagreeing with the engine.
+pub fn probe_matching_devices() -> Vec<RawDeviceInfo> {
+    probe_all_devices()
+        .into_iter()
+        .filter(|d| {
+            d.vendor_id == report::SONY_VENDOR_ID && report::DS4_PRODUCT_IDS.contains(&d.product_id)
+        })
+        // The Bluetooth pad enumerates once per HID interface. Only the gamepad
+        // interface carries reports; the others are the speaker, microphone and
+        // the control-transport endpoint, and opening one of those yields a device
+        // that never sends a report.
+        .filter(|d| d.usage_page == 0x01 && d.usage == 0x05)
+        .collect()
 }
 
 /// Live state shared between the reader thread and the engine.
@@ -254,6 +328,121 @@ const BATTERY_INTERVAL: Duration = Duration::from_secs(30);
 /// How often to re-scan the bus while no pad is present.
 const RESCAN_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How long a candidate interface gets to produce a decodable report before it
+/// is treated as silent.
+///
+/// Short, because this runs inside the connect path and a pad that is working
+/// reports at up to 1000 Hz, so a single frame arrives in a millisecond. Three
+/// seconds is already generous for a machine under load.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long a single read waits before returning empty, in milliseconds.
+///
+/// Short enough that the loop comes back around often to notice a shutdown
+/// request or a stalled link, long enough that a 1000 Hz pad never misses its
+/// turn and the loop spins.
+const READ_TIMEOUT_MS: i32 = 50;
+
+/// How long the pad may go without delivering a frame before it is treated as
+/// disconnected.
+///
+/// Far longer than the gap between reports at any supported rate, and longer
+/// than the battery poll interval, because a pad that has gone quiet for this
+/// long is not coming back on its own.
+const STALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Choose the interface that actually delivers reports.
+///
+/// A Bluetooth DS4 exposes several HID collections at once. Measured on a real
+/// DS4 v2: interface 3 opens successfully and then never returns from `read`,
+/// while interface -1 delivers every frame. Nothing in the device list
+/// distinguishes them — same vendor id, same product id, same usage page and
+/// usage — so the only reliable test is to read from each and see which one
+/// speaks.
+///
+/// The first candidate is probed with a short deadline, and any that stays
+/// silent is remembered so the remaining candidates are tried within the same
+/// pass. When every candidate is silent the first is returned anyway, so a pad
+/// that is merely slow to start still gets its reader thread rather than
+/// silently disappearing.
+fn pick_live_interface<'a>(
+    api: &hidapi::HidApi,
+    candidates: &[&'a hidapi::DeviceInfo],
+    stop: &Arc<AtomicBool>,
+) -> Option<&'a hidapi::DeviceInfo> {
+    // Order the candidates so the most likely one is probed first, which is
+    // what keeps the common case at one probe rather than several.
+    let ordered = order_candidates(candidates);
+
+    let mut dead: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for candidate in &ordered {
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
+        let key = candidate.path().to_string_lossy().into_owned();
+        if dead.contains(&key) {
+            continue;
+        }
+        if interface_delivers_reports(api, candidate, stop) {
+            if !dead.is_empty() {
+                // Worth saying out loud: without this the reader looks like it
+                // lost the pad, when in fact it walked past a silent interface.
+                info!("skipped {} silent interface(s) before this one", dead.len());
+            }
+            return Some(candidate);
+        }
+        dead.insert(key);
+    }
+
+    // Nothing answered. Fall back to the first candidate so the reader still
+    // runs: a pad that has just been woken may start reporting on the next pass,
+    // and a reader thread with nothing to read is at least retrying.
+    ordered.first().copied()
+}
+
+/// Order candidates by how likely each is to be the reporting interface.
+fn order_candidates<'a>(candidates: &[&'a hidapi::DeviceInfo]) -> Vec<&'a hidapi::DeviceInfo> {
+    let mut ordered: Vec<_> = candidates.to_vec();
+    ordered.sort_by_key(|d| interface_rank(d.interface_number()));
+    ordered
+}
+
+/// Whether one interface produces a decodable DS4 report within the timeout.
+fn interface_delivers_reports(
+    api: &hidapi::HidApi,
+    candidate: &hidapi::DeviceInfo,
+    stop: &Arc<AtomicBool>,
+) -> bool {
+    let Ok(path) = CString::new(candidate.path().to_string_lossy().as_ref()) else {
+        return false;
+    };
+    // `read_timeout` takes `&self`, so no mutable binding is needed here.
+    let Ok(device) = api.open_path(&path) else {
+        return false;
+    };
+
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let mut buffer = [0u8; 256];
+    while Instant::now() < deadline {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        // A short read timeout rather than a blocking one, so the deadline is
+        // actually reachable. `read` on a silent collection otherwise never
+        // returns, and this probe would hang for the life of the process.
+        match device.read_timeout(&mut buffer, 50) {
+            Ok(n) if n > 0 => {
+                if crate::report::parse(&buffer[..n]).is_some() {
+                    return true;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     api: Arc<hidapi::HidApi>,
@@ -268,17 +457,27 @@ fn run(
     let idle_backoff = interval_for_rate(poll_rate_hz);
 
     while !stop.load(Ordering::Relaxed) {
-        let found = api.device_list().find(|d| {
-            d.vendor_id() == report::SONY_VENDOR_ID
-                && report::DS4_PRODUCT_IDS.contains(&d.product_id())
-                && match (want_serial.as_deref(), d.serial_number()) {
-                    (Some(want), Some(have)) => want == have,
-                    (Some(_), None) => false,
-                    (None, _) => true,
-                }
-        });
+        // Collect every candidate rather than taking the first. A DS4 over
+        // Bluetooth enumerates as more than one HID collection, and only one of
+        // them carries gamepad reports. Opening a collection that carries none
+        // succeeds and then blocks forever on read, which stalls the reader
+        // thread and presents as a pad that enumerates and is then treated as
+        // silent. Taking the first match therefore looks like a dead pad even
+        // though the pad is reporting perfectly well on another interface.
+        let candidates: Vec<_> = api
+            .device_list()
+            .filter(|d| {
+                d.vendor_id() == report::SONY_VENDOR_ID
+                    && report::DS4_PRODUCT_IDS.contains(&d.product_id())
+                    && match (want_serial.as_deref(), d.serial_number()) {
+                        (Some(want), Some(have)) => want == have,
+                        (Some(_), None) => false,
+                        (None, _) => true,
+                    }
+            })
+            .collect();
 
-        let Some(raw_info) = found else {
+        let Some(raw_info) = pick_live_interface(&api, &candidates, &stop) else {
             {
                 let mut s = snapshot.lock();
                 if s.connected {
@@ -335,16 +534,37 @@ fn run(
         let mut last_frame = Instant::now();
         let mut last_battery = Instant::now();
         let mut dead = false;
+        // When the pad last actually delivered a frame. A read timeout returning
+        // nothing is not itself a disconnect: at 1000 Hz a gap of a few hundred
+        // milliseconds is normal, and the battery poll deliberately goes quiet
+        // for seconds at a time.
+        let mut last_report = Instant::now();
 
         while !stop.load(Ordering::Relaxed) && !dead {
             service_output(&device, &rx);
 
-            match device.read(&mut buf) {
+            // A timeout, not a blocking read. Two reasons, both learned the hard
+            // way: a silent interface blocks forever, and a pad that goes to
+            // sleep or walks out of range stops reporting without the handle
+            // reporting anything. Either way the loop needs to come back around
+            // to notice the shutdown flag or the stall.
+            match device.read_timeout(&mut buf, READ_TIMEOUT_MS) {
+                Ok(0) => {
+                    if last_report.elapsed() > STALL_TIMEOUT {
+                        warn!(
+                            "pad stopped reporting for {:?}, treating it as gone",
+                            STALL_TIMEOUT
+                        );
+                        dead = true;
+                    }
+                    continue;
+                }
                 Ok(n) => {
                     let Some(mut rep) = report::parse(&buf[..n]) else {
                         continue;
                     };
                     rep.fresh = false;
+                    last_report = Instant::now();
 
                     let cal = calibration.lock();
                     let (lx, ly, rx, ry) = cal.offsets();
@@ -499,9 +719,84 @@ pub fn interval_for_rate(hz: u32) -> Duration {
     Duration::from_micros(1_000_000 / hz.clamp(1, 1000) as u64)
 }
 
+/// The sort key deciding which interface is probed first.
+///
+/// Exposed as a free function so the ordering can be tested without a device
+/// handle, which `hidapi::DeviceInfo` cannot be built without.
+fn interface_rank(interface_number: i32) -> usize {
+    // Bluetooth composite devices report real interface numbers, and the gamepad
+    // collection is not always the lowest one. A negative number means no
+    // interface, which on this pad is the top-level collection that does report,
+    // so it has to sort ahead of every numbered interface.
+    match interface_number {
+        n if n < 0 => 0,
+        n => 1 + n as usize,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Measured on a real DS4 v2: interface 3 opens successfully and then never
+    /// returns from read, while interface -1 delivers every frame. Taking the
+    /// first match therefore blocks the reader on the silent one and the pad
+    /// looks disconnected even though it is reporting perfectly well.
+    #[test]
+    fn top_level_interfaces_are_tried_before_composite_ones() {
+        assert_eq!(interface_rank(-1), 0, "the top-level collection leads");
+        assert!(
+            interface_rank(-1) < interface_rank(3),
+            "interface -1 must be probed before interface 3"
+        );
+
+        // Among numbered interfaces, the lowest number goes first, and the order
+        // is total so the choice is deterministic.
+        assert!(interface_rank(0) < interface_rank(1));
+        assert!(interface_rank(2) < interface_rank(5));
+
+        // The exact pair from the real pad, in the order the probe found them.
+        let mut numbers = [3i32, -1];
+        numbers.sort_by_key(|n| interface_rank(*n));
+        assert_eq!(
+            numbers[0], -1,
+            "the reporting interface has to be probed first"
+        );
+    }
+
+    /// The stall timeout must comfortably exceed the gap between reports at any rate
+    /// the pad can be configured for, or a healthy pad gets declared gone while
+    /// sitting still.
+    ///
+    /// The rate matters rather than being decorative: at 1000 Hz a frame arrives
+    /// every millisecond, so a timeout of even a few hundred milliseconds is
+    /// hundreds of missed frames, while at the low end the gap is orders of
+    /// magnitude larger. Both ends are checked because the timeout has to clear
+    /// them.
+    #[test]
+    fn stall_timeout_clearly_exceeds_the_report_interval() {
+        for hz in [1u32, 10, 125, 250, 500, 1000] {
+            let gap = interval_for_rate(hz);
+            assert!(
+                STALL_TIMEOUT > gap * 4,
+                "at {hz} Hz the gap is {gap:?}, which the {STALL_TIMEOUT:?} timeout does not cover"
+            );
+        }
+    }
+
+    /// The read timeout is the floor on how long the reader takes to notice a
+    /// shutdown request, so it has to stay small relative to the stall timeout:
+    /// a timeout longer than the stall check would make the stall detection
+    /// unreachable in practice.
+    #[test]
+    fn read_timeout_is_short_relative_to_the_stall_timeout() {
+        let read = Duration::from_millis(READ_TIMEOUT_MS as u64);
+        assert!(
+            read * 20 < STALL_TIMEOUT,
+            "a {read:?} read timeout means the {STALL_TIMEOUT:?} stall check is only \
+             sampled every {read:?}, which is too coarse"
+        );
+    }
 
     #[test]
     fn enumerate_does_not_panic_without_hardware() {
