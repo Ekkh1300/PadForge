@@ -193,11 +193,13 @@ impl AxisSettings {
 }
 
 /// The classic PlayStation-style default: Cross = A, Circle = B, Square = X,
-/// Triangle = Y, Share = Back, Options = Start, touchpad = Guide.
+/// Triangle = Y, Share = Back, Options = Start.
+///
+/// The touchpad click is left unbound. See the note below the table.
 fn default_mapping() -> BTreeMap<Ds4Control, Mapping> {
     use Ds4Control as D;
     use X360Control as X;
-    let pairs: [(D, X); 17] = [
+    let pairs: [(D, X); 16] = [
         (D::Cross, X::A),
         (D::Circle, X::B),
         (D::Square, X::X),
@@ -214,9 +216,22 @@ fn default_mapping() -> BTreeMap<Ds4Control, Mapping> {
         (D::DpadDown, X::DpadDown),
         (D::DpadLeft, X::DpadLeft),
         (D::DpadRight, X::DpadRight),
-        // The touchpad is the closest thing a DS4 has to a Guide button, so it
-        // takes that role by default.
-        (D::TouchpadClick, X::Guide),
+        // The touchpad click is deliberately NOT bound to Guide.
+        //
+        // It is the obvious mapping, and it was the default until real hardware
+        // showed what it does: Windows reserves the Guide button as a system
+        // chord, so pressing it pops the Xbox Game Bar open over whatever the
+        // player is doing. The bar then takes focus, and the game loses it. From
+        // the pad it looks like the application opened a menu at random.
+        //
+        // A mapping whose effect is owned by the operating system is not a
+        // default worth shipping, even when it is the intuitive answer. Anyone
+        // who wants it can bind it in Settings, where the consequence is their
+        // choice rather than everyone's.
+        //
+        // The pad click is left unbound entirely rather than bound to something
+        // else: there is no second control on the pad that wants this role, and
+        // inventing a target would be a guess about what the user meant.
     ];
     pairs
         .into_iter()
@@ -474,7 +489,40 @@ impl ProfileStore {
     }
 
     pub fn load() -> Self {
-        paths::read_json(&profiles_file()).unwrap_or_else(Self::bootstrap)
+        let mut store = paths::read_json(&profiles_file()).unwrap_or_else(Self::bootstrap);
+        store.repair_system_reserved_bindings();
+        store
+    }
+
+    /// Neutralise bindings that Windows reserves for itself, wherever they came from.
+    ///
+    /// Changing the default preset is not enough on its own: a profile written by
+    /// an earlier version still carries the binding, and loading it verbatim
+    /// reproduces exactly the behaviour the default was fixed for. So the repair
+    /// runs on load, across every profile.
+    ///
+    /// The entry is kept and its target set to `None` rather than removed. The UI
+    /// lists every control including the unmapped ones, so a control that
+    /// vanished from the map would disappear from the mapping page entirely, which
+    /// reads as the application having lost a setting.
+    ///
+    /// Scoped to Guide deliberately. Other XInput buttons have no system chord
+    /// behind them, and silently unbinding a control someone chose would be worse
+    /// than the problem it solves. Guide is different because the operating system
+    /// acts on it whether or not any application is listening for it.
+    pub fn repair_system_reserved_bindings(&mut self) {
+        let mut changed = false;
+        for profile in &mut self.profiles {
+            for mapping in profile.mapping.values_mut() {
+                if mapping.target == X360Control::Guide {
+                    mapping.target = X360Control::None;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let _ = self.save();
+        }
     }
 }
 
@@ -517,9 +565,65 @@ mod tests {
             p.mapping_for(Ds4Control::Options).target,
             X360Control::Start
         );
+    }
+
+    /// The Guide button must not be bound by default.
+    ///
+    /// Windows reserves it as a system chord, so a binding here makes the pad
+    /// pop the Xbox Game Bar open mid-game and steal focus. That was the default
+    /// mapping for the touchpad click until real hardware surfaced it, and this
+    /// test is the reason it cannot come back unnoticed.
+    #[test]
+    fn default_profile_leaves_guide_unbound() {
+        let p = Profile::new();
+        for (control, mapping) in &p.mapping {
+            assert_ne!(
+                mapping.target,
+                X360Control::Guide,
+                "{control:?} is bound to Guide, which Windows owns as a system chord"
+            );
+        }
+    }
+
+    /// The same guarantee has to hold for profiles written by an earlier version,
+    /// since fixing the default alone leaves every existing profile untouched.
+    #[test]
+    fn repair_unbinds_guide_from_an_existing_profile() {
+        let mut store = ProfileStore::bootstrap();
+        let id = store.profiles[0].id.clone();
+        store
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == id)
+            .expect("the bootstrap profile exists")
+            .mapping
+            .insert(Ds4Control::TouchpadClick, Mapping::new(X360Control::Guide));
+
+        store.repair_system_reserved_bindings();
+
+        let profile = &store.profiles[0];
+        assert!(
+            !profile
+                .mapping
+                .values()
+                .any(|m| m.target == X360Control::Guide),
+            "the stale Guide binding survived the repair"
+        );
+        // The entry stays, neutralised: the mapping page lists every control, so
+        // a removed entry would vanish from the UI as well as from the profile.
         assert_eq!(
-            p.mapping_for(Ds4Control::TouchpadClick).target,
-            X360Control::Guide
+            profile
+                .mapping
+                .get(&Ds4Control::TouchpadClick)
+                .map(|m| m.target),
+            Some(X360Control::None),
+            "the control should still be listed, just unbound"
+        );
+        // Everything else has to be left alone, or the repair is just destructive.
+        assert_eq!(
+            profile.mapping.get(&Ds4Control::Cross).map(|m| m.target),
+            Some(X360Control::A),
+            "the repair disturbed an unrelated binding"
         );
     }
 
@@ -542,19 +646,24 @@ mod tests {
         }
     }
 
-    /// Every control the UI shows in a default profile must have a real target;
-    /// anything else is a control the user has to fix by hand for no reason.
+    /// Every control the UI shows in a default profile must have a real target,
+    /// except the ones that are deliberately open.
+    ///
+    /// "Deliberately open" is a short list and each entry has a reason:
+    ///
+    ///   * stick directions and the pseudo-controls are opt-in extras rather than
+    ///     part of the standard layout;
+    ///   * the touchpad click is unbound because its obvious target, Guide, is
+    ///     owned by the operating system as a system chord.
     #[test]
     fn default_profile_has_no_surprising_holes() {
         use Ds4Control as D;
         let p = Profile::new();
         for control in Ds4Control::ALL {
-            // Deliberately unbound: pseudo-controls, and stick directions, which
-            // are an opt-in extra rather than part of the standard layout.
-            let expected_hole =
-                control.is_axis_direction() || matches!(control, D::DpadAny | D::TouchpadGesture);
+            let deliberately_open = control.is_axis_direction()
+                || matches!(control, D::DpadAny | D::TouchpadGesture | D::TouchpadClick);
             let mapped = p.mapping_for(*control).target != X360Control::None;
-            if expected_hole {
+            if deliberately_open {
                 assert!(!mapped, "{control:?} should be unbound by default");
             } else {
                 assert!(mapped, "{control:?} should be bound by default");
