@@ -4,6 +4,18 @@
 # Release artefacts. build-installer.cmd regenerates dist/PadForge-Setup.exe.
 /dist
 
+# Generated icon. tools/make_icon.py rebuilds it from source, so 30 KB of
+# pixels does not belong in the history. The ICO that windres actually reads is
+# a copy of it and is likewise generated.
+tools/assets/
+tools/padforge.ico
+
+# Debug screenshots taken next to the source during development.
+*.log
+docs/*.png
+# ...except the one the README shows.
+!docs/installer.png
+
 # Binaries and debug symbols
 *.exe
 *.pdb
@@ -15,8 +27,7 @@
 *~
 .vscode/
 .idea/
+__pycache__/
+*.pyc
 Thumbs.db
 desktop.ini
-
-# Logs and captures written next to the source during debugging
-*.log

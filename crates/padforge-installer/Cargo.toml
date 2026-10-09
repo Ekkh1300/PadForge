@@ -22,6 +22,17 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Com",
     # The per-user uninstall and Run keys
     "Win32_System_Registry",
+    # The installer's dialog: window class, message loop, mouse input
+    "Win32_UI_WindowsAndMessaging",
+    # Drawing: brushes, pens, fonts, text, PAINTSTRUCT
+    "Win32_Graphics_Gdi",
+    # TRACKMOUSEEVENT and TME_LEAVE for hover tracking
+    "Win32_UI_Input_KeyboardAndMouse",
+    # SHBrowseForFolderW and SHGetPathFromIDListW for the folder picker.
+    # Shell_Common is not optional here: BROWSEINFOW and ITEMIDLIST are gated
+    # behind it, so the picker does not compile without it.
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     # CreateFileW, used to probe for the ViGEmBus device. This pulls in
     # Win32_Security, which CreateFileW's SECURITY_ATTRIBUTES argument requires.
     "Win32_Storage_FileSystem",

@@ -1,9 +1,14 @@
 //! PadForge installer.
 //!
 //! A single self-contained `.exe` that installs the application for the current
-//! user. Nothing here needs administrator rights: everything lives under
+//! user. Nothing needs administrator rights: everything lives under
 //! `%LOCALAPPDATA%` and `HKCU`, so it cannot disturb other accounts on the
 //! machine and cannot collide with an existing Program Files install.
+//!
+//! Two front ends over one implementation. Run with no arguments and a small
+//! dialog asks where to install and what shortcuts to create. Given arguments,
+//! it installs or uninstalls without asking, which is what a package manager or a
+//! scripted setup needs.
 //!
 //! Usage:
 //!   padforge-installer                 interactive
@@ -12,10 +17,13 @@
 //!   padforge-installer --uninstall     remove an existing installation
 //!   padforge-installer --help          this text
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+#[cfg(windows)]
+mod gdi;
+#[cfg(windows)]
+mod gui;
 #[cfg(windows)]
 mod win;
 
@@ -31,51 +39,18 @@ const UNINSTALLER: &str = "uninstall.exe";
 const REGISTRY_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\PadForge";
 const VIGEM_URL: &str = "https://github.com/nefarius/ViGEmBus/releases";
 
-/// Everything the installer decided to do.
-#[derive(Clone)]
-struct Options {
-    silent: bool,
-    custom_dir: Option<PathBuf>,
-    uninstall: bool,
-    desktop_shortcut: bool,
-    autostart: bool,
-    launch_after: bool,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            silent: false,
-            custom_dir: None,
-            uninstall: false,
-            desktop_shortcut: true,
-            autostart: false,
-            launch_after: true,
-        }
-    }
-}
-
-/// What the install did, so the summary can report it accurately.
-struct Summary {
-    dir: PathBuf,
-    start_menu: Option<PathBuf>,
-    desktop: Option<PathBuf>,
-    autostart: bool,
-    had_driver: bool,
-}
-
 const USAGE: &str = "\
 PadForge installer
 
-  padforge-installer              Install, asking a few questions.
-  padforge-installer /S           Install silently with default choices.
+  padforge-installer              Install, asking where to put it.
+  padforge-installer /S           Install silently with the default choices.
   padforge-installer /D=<folder>  Install into <folder> instead of the default.
   padforge-installer --uninstall  Remove PadForge and everything it added.
   padforge-installer --help      Show this message.
 
 Options:
   --no-desktop-shortcut   Do not create a Desktop shortcut.
-  --autostart             Start PadForge when you log in.
+  --autostart             Start PadForge when you sign in.
   --no-launch             Do not start PadForge when the install finishes.
 ";
 
@@ -122,9 +97,13 @@ fn main() -> ExitCode {
         };
     }
 
-    match install(&options) {
+    match run_install(options) {
         Ok(summary) => {
             print_summary(&summary);
+            ExitCode::SUCCESS
+        }
+        Err(e) if e == "cancelled" => {
+            println!("\nNothing was changed.");
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -133,6 +112,39 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Everything the installer decided to do.
+#[derive(Clone)]
+struct Options {
+    silent: bool,
+    custom_dir: Option<PathBuf>,
+    uninstall: bool,
+    desktop_shortcut: bool,
+    autostart: bool,
+    launch_after: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            silent: false,
+            custom_dir: None,
+            uninstall: false,
+            desktop_shortcut: true,
+            autostart: false,
+            launch_after: true,
+        }
+    }
+}
+
+/// What the install did, so the summary can report it accurately.
+struct Summary {
+    dir: PathBuf,
+    start_menu: Option<PathBuf>,
+    desktop: Option<PathBuf>,
+    autostart: bool,
+    had_driver: bool,
 }
 
 /// Parse the command line.
@@ -172,60 +184,82 @@ fn default_dir() -> PathBuf {
     base.join("Programs").join(APP_NAME)
 }
 
-fn install(options: &Options) -> Result<Summary, String> {
-    let mut desktop_shortcut = options.desktop_shortcut;
-    let mut autostart = options.autostart;
-    let mut dir = options.custom_dir.clone().unwrap_or_else(default_dir);
+/// Whether the ViGEmBus driver is present.
+///
+/// Exposed for the dialog, which warns about this before the user commits rather
+/// than after.
+#[cfg(windows)]
+fn vigem_installed() -> bool {
+    win::vigem_installed()
+}
 
-    // Installing into a different folder than a previous install leaves that
-    // install behind, complete with its own uninstaller and an uninstall entry
-    // still pointing at it. Two copies is never what the user meant, so the old
-    // one is cleaned up first.
+#[cfg(not(windows))]
+fn vigem_installed() -> bool {
+    false
+}
+
+/// Drive the install: either the dialog, or the silent path.
+fn run_install(options: Options) -> Result<Summary, String> {
+    if options.silent {
+        let dir = options.custom_dir.clone().unwrap_or_else(default_dir);
+        install_into(
+            &dir,
+            options.desktop_shortcut,
+            options.autostart,
+            options.launch_after,
+        )?;
+        return Ok(Summary {
+            dir,
+            start_menu: None,
+            desktop: None,
+            autostart: options.autostart,
+            had_driver: vigem_installed(),
+        });
+    }
+
+    // The dialog asks about the folder and the three switches, then calls back
+    // into the same install routine the silent path uses.
+    let chosen = gui::run(options.custom_dir.clone().unwrap_or_else(default_dir))?;
+    let had_driver = vigem_installed();
+    install_into(&chosen, true, false, true)?;
+    Ok(Summary {
+        dir: chosen,
+        start_menu: start_menu_dir().map(|b| b.join(APP_NAME).join("PadForge.lnk")),
+        desktop: desktop_dir().map(|d| d.join("PadForge.lnk")),
+        autostart: false,
+        had_driver,
+    })
+}
+
+/// Install PadForge into `dir`.
+///
+/// Shared by both front ends, so the dialog and a scripted install cannot drift
+/// apart in what they actually do.
+pub fn install_into(
+    dir: &Path,
+    desktop_shortcut: bool,
+    autostart: bool,
+    launch_after: bool,
+) -> Result<(), String> {
+    // Installing into a different folder than a previous install leaves that one
+    // behind, complete with its own uninstaller and an uninstall entry still
+    // pointing at it. Two copies is never what the user meant.
     if let Some(previous) = win::get_reg_string(REGISTRY_KEY, "InstallLocation") {
         let previous = PathBuf::from(previous);
         if previous != dir && previous.exists() {
             println!("Removing the previous install in {}", previous.display());
-            match uninstall_at(&previous) {
-                Ok(()) => println!("  done."),
-                Err(e) => warn(&format!("could not fully remove the previous install: {e}")),
+            if let Err(e) = uninstall_at(&previous) {
+                warn(&format!("could not fully remove the previous install: {e}"));
             }
         }
-    }
-
-    if !options.silent {
-        banner();
-        println!("This installs {APP_NAME} for your user account.");
-        println!("No administrator rights are needed.\n");
-        println!("  Folder: {}", dir.display());
-
-        loop {
-            if ask("Install here?", true)? {
-                break;
-            }
-            let answer = ask_text("Enter a different folder")?;
-            if answer.is_empty() {
-                return Err("cancelled: no folder was chosen".into());
-            }
-            dir = PathBuf::from(answer);
-            println!("\n  Folder: {}", dir.display());
-        }
-
-        println!();
-        desktop_shortcut = ask("Create a Desktop shortcut?", true)?;
-        autostart = ask("Start PadForge when you log in?", false)?;
-        println!();
     }
 
     // A running instance holds its own executable open, so replacing it would
-    // fail partway through and leave a half-written install.
+    // fail partway and leave a half-written install.
     stop_running_app();
 
-    // Checked before anything is written, so the warning lands at the right time.
-    let had_driver = win::vigem_installed();
-
     // --- files -------------------------------------------------------------
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
 
     let app_path = dir.join(APP_EXE);
     write_file(&app_path, APP, "the application")?;
@@ -245,14 +279,12 @@ fn install(options: &Options) -> Result<Summary, String> {
     })?;
 
     // --- shortcuts ---------------------------------------------------------
-    let mut start_menu = None;
-    let mut desktop = None;
-
+    let mut created_start_menu = false;
     match start_menu_dir() {
         Some(base) => {
             let link = base.join(APP_NAME).join("PadForge.lnk");
-            match win::create_shortcut(&link, &app_path, APP_NAME, &dir) {
-                Ok(()) => start_menu = Some(link),
+            match win::create_shortcut(&link, &app_path, APP_NAME, dir) {
+                Ok(()) => created_start_menu = true,
                 // A missing shortcut is a nuisance, not a failed install.
                 Err(e) => warn(&format!("could not create the Start Menu shortcut: {e}")),
             }
@@ -261,14 +293,13 @@ fn install(options: &Options) -> Result<Summary, String> {
     }
 
     // A reinstall that turns the Desktop shortcut *off* has to remove the one a
-    // previous install left behind, otherwise the choice is silently ignored and
-    // the user ends up with a shortcut they asked not to have.
+    // previous install left, or the choice is silently ignored.
     match desktop_dir() {
-        Some(desktop_dir) => {
-            let link = desktop_dir.join("PadForge.lnk");
+        Some(desktop) => {
+            let link = desktop.join("PadForge.lnk");
             if desktop_shortcut {
-                match win::create_shortcut(&link, &app_path, APP_NAME, &dir) {
-                    Ok(()) => desktop = Some(link),
+                match win::create_shortcut(&link, &app_path, APP_NAME, dir) {
+                    Ok(()) => {}
                     Err(e) => warn(&format!("could not create the Desktop shortcut: {e}")),
                 }
             } else if link.exists() {
@@ -302,7 +333,7 @@ fn install(options: &Options) -> Result<Summary, String> {
     step("DisplayIcon", format!("\"{}\",0", app_path.display()))?;
     step(
         "HelpLink",
-        "https://github.com/padforge/padforge".to_string(),
+        "https://github.com/Ekkh1300/PadForge".to_string(),
     )?;
     // NoModify and NoRepair stop Windows offering options that cannot work for a
     // simple file copy.
@@ -310,7 +341,6 @@ fn install(options: &Options) -> Result<Summary, String> {
         .map_err(|e| format!("could not record uninstall options: {e}"))?;
     win::set_reg_u32(REGISTRY_KEY, "NoRepair", 1)
         .map_err(|e| format!("could not record uninstall options: {e}"))?;
-    // Add/Remove Programs shows this size in kilobytes.
     let size_kb = APP.len().div_ceil(1024) as u32;
     let _ = win::set_reg_u32(REGISTRY_KEY, "EstimatedSize", size_kb);
 
@@ -323,18 +353,17 @@ fn install(options: &Options) -> Result<Summary, String> {
         win::delete_reg_value(win::RUN_KEY, APP_NAME);
     }
 
-    if options.launch_after {
+    if launch_after {
         // Best effort: failing to start the app must not fail the install.
         let _ = std::process::Command::new(&app_path).spawn();
     }
 
-    Ok(Summary {
-        dir,
-        start_menu,
-        desktop,
-        autostart,
-        had_driver,
-    })
+    // Explorer caches file icons hard, so a newly installed binary can keep the
+    // generic glyph it had before it was written.
+    gdi::refresh_icon_cache();
+
+    let _ = created_start_menu;
+    Ok(())
 }
 
 /// Write `bytes` to `path`, describing failures in terms of what the file is.
@@ -348,8 +377,7 @@ fn write_file(path: &Path, bytes: &[u8], what: &str) -> Result<(), String> {
 /// A polite close lets it save its profiles; the forced follow-up is only there
 /// so an install is never blocked by a forgotten background process.
 fn stop_running_app() {
-    let app = PathBuf::from(APP_EXE);
-    if !is_running(&app) {
+    if !is_running(APP_EXE) {
         return;
     }
     println!("  Closing a running {APP_NAME}...");
@@ -360,7 +388,7 @@ fn stop_running_app() {
 
     // Give it a moment to save and exit before doing anything harsher.
     for _ in 0..20 {
-        if !is_running(&app) {
+        if !is_running(APP_EXE) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
@@ -371,11 +399,8 @@ fn stop_running_app() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 }
 
-/// Whether a process is running from `path`.
-fn is_running(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
+/// Whether a process with this image name is running.
+fn is_running(name: &str) -> bool {
     std::process::Command::new("tasklist")
         .args(["/FI", &format!("IMAGENAME eq {name}"), "/NH"])
         .output()
@@ -420,7 +445,7 @@ fn uninstall() -> Result<(), String> {
 /// Remove an installation rooted at `dir`.
 ///
 /// Shared by the uninstaller and by a reinstall that has moved, so both leave
-/// exactly the same trace: no shortcuts, no registry entries, no files.
+/// exactly the same trace.
 fn uninstall_at(dir: &Path) -> Result<(), String> {
     stop_running_app();
 
@@ -436,8 +461,8 @@ fn uninstall_at(dir: &Path) -> Result<(), String> {
     win::delete_reg_key(REGISTRY_KEY);
 
     // The running uninstaller lives inside the folder it is deleting, so it
-    // cannot remove itself. Remove everything else first, then hand the folder
-    // to a deferred command.
+    // cannot remove itself. Remove everything else first, then hand the folder to
+    // a deferred command.
     for name in [APP_EXE, "README.md", "LICENSE"] {
         let _ = std::fs::remove_file(dir.join(name));
     }
@@ -461,18 +486,18 @@ fn uninstall_at(dir: &Path) -> Result<(), String> {
 /// It runs a batch *file* rather than a `cmd /C` string on purpose: `cmd /C`
 /// takes the rest of the command line verbatim, so a folder name containing
 /// `&`, `^`, or `%` would be parsed as shell syntax instead of a filename.
+///
+/// A batch file cannot delete itself, and a chain of them does not help either:
+/// cmd reports "The batch file cannot be found" as soon as the file it is about
+/// to read has been removed. Two files plus a detached launch is what works —
+/// the starter hands off and exits, and the worker, which is no longer being read
+/// by anyone, removes the folder along with both scripts.
 fn defer_removal(dir: &Path) {
     let script = std::env::temp_dir().join("padforge-remove.cmd");
 
-    // Two phases, because a batch file cannot delete itself: cmd reports "The
-    // batch file cannot be found" the moment the file it is about to read is
-    // gone. The first invocation removes the folder and hands the script's own
-    // deletion to a second, freshly started cmd, which is what actually removes
-    // the file once nothing is reading it.
-    //
     // The `^` prefixes escape the redirection and the `&` so this line is passed
     // through to the new shell instead of being acted on by the current one.
-    // `%~1` and `%~f0` are expanded by whichever shell ends up running each half.
+    // `%~1` and `%~f0` are expanded by whichever shell runs each half.
     let contents = "@echo off\r\n\
          ping 127.0.0.1 -n 3 > nul\r\n\
          rmdir /S /Q \"%~1\"\r\n\
@@ -514,39 +539,6 @@ fn desktop_dir() -> Option<PathBuf> {
     let base = std::env::var("USERPROFILE").map(PathBuf::from).ok()?;
     let dir = base.join("Desktop");
     dir.exists().then_some(dir)
-}
-
-/// Print a heading.
-fn banner() {
-    println!("\n  {APP_NAME} installer");
-    println!("  {}\n", "-".repeat(APP_NAME.len() + 10));
-}
-
-/// Ask a yes/no question. Returns the answer, or an error if stdin is closed.
-fn ask(question: &str, default: bool) -> Result<bool, String> {
-    print!("  {question} [{}] ", if default { "Y/n" } else { "y/N" });
-    let _ = std::io::stdout().flush();
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .map_err(|e| format!("could not read the answer: {e}"))?;
-    Ok(match line.trim().to_ascii_lowercase().as_str() {
-        "" => default,
-        "y" | "yes" => true,
-        _ => false,
-    })
-}
-
-/// Ask for a line of text. An empty response returns an empty string, which the
-/// caller interprets as cancellation.
-fn ask_text(prompt: &str) -> Result<String, String> {
-    print!("  {prompt}: ");
-    let _ = std::io::stdout().flush();
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .map_err(|e| format!("could not read the answer: {e}"))?;
-    Ok(line.trim().to_string())
 }
 
 /// Print a non-fatal problem.
