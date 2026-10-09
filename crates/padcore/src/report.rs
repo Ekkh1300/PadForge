@@ -477,13 +477,23 @@ pub fn output_report(
         buf[12] = blue;
     }
     if let Some((large, small)) = rumble {
-        let (off, _) = match transport {
-            Transport::Usb => (len - 1, ()),
-            Transport::Bluetooth => (len - 1, ()),
+        // Two separate bytes, one per motor, each a full 0..=255. They are not
+        // nibbles sharing a byte, and they are not at the end of the report.
+        //
+        // Both of those were wrong here, and both failed quietly: masking to four
+        // bits capped every rumble at 6% strength, so a full-throttle rumble felt
+        // like a tap, and writing to the last byte of the buffer put the value
+        // where the pad does not read it, so it vibrated not at all. Neither
+        // produced an error; the first just felt weak and the second felt absent.
+        //
+        // Offsets confirmed against DS4Windows, which writes these at [6] and [7]
+        // over Bluetooth and [4] and [5] over USB.
+        let (fast, slow) = match transport {
+            Transport::Usb => (4usize, 5usize),
+            Transport::Bluetooth => (6usize, 7usize),
         };
-        // The two motors share one byte: low nibble = heavy (right), high nibble
-        // = light (left).
-        buf[off] = (large & 0x0F) | ((small & 0x0F) << 4);
+        buf[fast] = large;
+        buf[slow] = small;
     }
     buf
 }
@@ -503,6 +513,52 @@ mod tests {
         b[6] = 0x00;
         b[7] = 0x00;
         b
+    }
+
+    /// The two motors are full bytes at fixed offsets, one per transport.
+    ///
+    /// Both facts were wrong at once. The value was masked to four bits, which
+    /// capped every rumble at 6% strength, and it was written to the last byte of
+    /// the buffer, which is not where the pad reads it. Neither raised an error:
+    /// the first just felt weak, the second did nothing at all.
+    #[test]
+    fn rumble_uses_full_bytes_at_the_right_offsets() {
+        for (transport, fast, slow) in [
+            (Transport::Usb, 4usize, 5usize),
+            (Transport::Bluetooth, 6, 7),
+        ] {
+            let buf = output_report(transport, 0, 0, 0, Some((200, 100)));
+            assert_eq!(
+                buf[fast],
+                200,
+                "{}: the fast motor byte must carry the full value, not a masked one",
+                transport.label()
+            );
+            assert_eq!(
+                buf[slow],
+                100,
+                "{}: the slow motor byte must carry the full value",
+                transport.label()
+            );
+        }
+    }
+
+    /// Full strength has to survive, because masking to a nibble is precisely
+    /// what made a maximum rumble feel like a tap.
+    #[test]
+    fn full_rumble_is_not_clipped() {
+        let buf = output_report(Transport::Bluetooth, 0, 0, 0, Some((255, 255)));
+        assert_eq!(buf[6], 255, "a full rumble must reach the pad as 255");
+        assert_eq!(buf[7], 255, "both motors, or the light one was masked too");
+    }
+
+    /// The rumble bytes must not collide with the colour bytes, or setting one
+    /// silently disturbs the other.
+    #[test]
+    fn rumble_and_colour_do_not_overlap() {
+        let buf = output_report(Transport::Bluetooth, 11, 22, 33, Some((44, 55)));
+        assert_eq!((buf[1], buf[2], buf[3]), (11, 22, 33), "colour bytes");
+        assert_eq!((buf[6], buf[7]), (44, 55), "rumble bytes");
     }
 
     #[test]
