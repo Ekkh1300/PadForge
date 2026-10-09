@@ -124,8 +124,6 @@ impl ShellLink {
     }
 }
 
-
-
 /// Encode text as a NUL-terminated UTF-16 string.
 fn wide(text: &str) -> Vec<u16> {
     std::ffi::OsStr::new(text)
@@ -293,7 +291,9 @@ fn create_key(path: &str) -> Result<HKEY, String> {
     // not been written yet.
     let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, w_path.as_ptr(), &mut key) };
     if status != 0 {
-        return Err(format!("could not open registry key {path} (status {status})"));
+        return Err(format!(
+            "could not open registry key {path} (status {status})"
+        ));
     }
     Ok(key)
 }
@@ -304,10 +304,18 @@ fn open_existing_key(path: &str, access: u32) -> Result<HKEY, String> {
     let mut key: HKEY = std::ptr::null_mut();
     // SAFETY: `w_path` is NUL-terminated and outlives the call.
     let status = unsafe {
-        RegOpenKeyExW(HKEY_CURRENT_USER, w_path.as_ptr(), REG_OPTION_NON_VOLATILE, access, &mut key)
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            w_path.as_ptr(),
+            REG_OPTION_NON_VOLATILE,
+            access,
+            &mut key,
+        )
     };
     if status != 0 {
-        return Err(format!("could not open registry key {path} (status {status})"));
+        return Err(format!(
+            "could not open registry key {path} (status {status})"
+        ));
     }
     Ok(key)
 }
@@ -333,7 +341,9 @@ pub fn set_reg_string(key_path: &str, name: &str, value: &str) -> Result<(), Str
     // SAFETY: balances the open above.
     unsafe { RegCloseKey(key) };
     if status != 0 {
-        return Err(format!("could not set {key_path}\\{name} (status {status})"));
+        return Err(format!(
+            "could not set {key_path}\\{name} (status {status})"
+        ));
     }
     Ok(())
 }
@@ -356,7 +366,9 @@ pub fn set_reg_u32(key_path: &str, name: &str, value: u32) -> Result<(), String>
     // SAFETY: balances the open above.
     unsafe { RegCloseKey(key) };
     if status != 0 {
-        return Err(format!("could not set {key_path}\\{name} (status {status})"));
+        return Err(format!(
+            "could not set {key_path}\\{name} (status {status})"
+        ));
     }
     Ok(())
 }

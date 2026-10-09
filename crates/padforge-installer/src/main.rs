@@ -82,7 +82,10 @@ Options:
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h" | "/?")) {
+    if args
+        .iter()
+        .any(|a| matches!(a.as_str(), "--help" | "-h" | "/?"))
+    {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
@@ -163,8 +166,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
 ///
 /// Per-user rather than Program Files, so the installer never needs elevation.
 fn default_dir() -> PathBuf {
-    let base =
-        std::env::var("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."));
+    let base = std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
     base.join("Programs").join(APP_NAME)
 }
 
@@ -296,7 +300,10 @@ fn install(options: &Options) -> Result<Summary, String> {
     )?;
     step("InstallLocation", dir.to_string_lossy().into_owned())?;
     step("DisplayIcon", format!("\"{}\",0", app_path.display()))?;
-    step("HelpLink", "https://github.com/padforge/padforge".to_string())?;
+    step(
+        "HelpLink",
+        "https://github.com/padforge/padforge".to_string(),
+    )?;
     // NoModify and NoRepair stop Windows offering options that cannot work for a
     // simple file copy.
     win::set_reg_u32(REGISTRY_KEY, "NoModify", 1)
@@ -321,7 +328,13 @@ fn install(options: &Options) -> Result<Summary, String> {
         let _ = std::process::Command::new(&app_path).spawn();
     }
 
-    Ok(Summary { dir, start_menu, desktop, autostart, had_driver })
+    Ok(Summary {
+        dir,
+        start_menu,
+        desktop,
+        autostart,
+        had_driver,
+    })
 }
 
 /// Write `bytes` to `path`, describing failures in terms of what the file is.
@@ -341,7 +354,9 @@ fn stop_running_app() {
     }
     println!("  Closing a running {APP_NAME}...");
     // Without /F this asks the window to close.
-    let _ = std::process::Command::new("taskkill").args(["/IM", APP_EXE]).output();
+    let _ = std::process::Command::new("taskkill")
+        .args(["/IM", APP_EXE])
+        .output();
 
     // Give it a moment to save and exit before doing anything harsher.
     for _ in 0..20 {
@@ -483,11 +498,14 @@ fn defer_removal(dir: &Path) {
     }
 }
 
-
 /// The user's Start Menu programs folder.
 fn start_menu_dir() -> Option<PathBuf> {
     let base = std::env::var("APPDATA").map(PathBuf::from).ok()?;
-    let dir = base.join("Microsoft").join("Windows").join("Start Menu").join("Programs");
+    let dir = base
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs");
     dir.exists().then_some(dir)
 }
 
@@ -549,7 +567,10 @@ fn print_summary(summary: &Summary) {
         println!("  Autostart:   yes");
     }
     println!("\n  To remove it, use Settings > Apps, or run:");
-    println!("    \"{}\" --uninstall", summary.dir.join(UNINSTALLER).display());
+    println!(
+        "    \"{}\" --uninstall",
+        summary.dir.join(UNINSTALLER).display()
+    );
 
     if !summary.had_driver {
         println!(

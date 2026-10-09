@@ -216,7 +216,11 @@ fn edit_one_axis(ui: &mut egui::Ui, ctx: &mut super::Ctx, axis: Axis) {
             .width(ui.available_width())
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut s.smoothing, Smoothing::Off, "off");
-                ui.selectable_value(&mut s.smoothing, Smoothing::Exponential { alpha: 0.3 }, "light");
+                ui.selectable_value(
+                    &mut s.smoothing,
+                    Smoothing::Exponential { alpha: 0.3 },
+                    "light",
+                );
                 ui.selectable_value(
                     &mut s.smoothing,
                     Smoothing::Exponential { alpha: 0.15 },
@@ -398,7 +402,11 @@ fn calibration_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine
             } else {
                 "No calibration yet. Leave the sticks at rest for a moment."
             })
-            .color(if cal.is_captured() { SUCCESS } else { TEXT_MUTED })
+            .color(if cal.is_captured() {
+                SUCCESS
+            } else {
+                TEXT_MUTED
+            })
             .size(12.5),
         );
 
@@ -427,8 +435,7 @@ fn calibration_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine
 
         ui.add_space(SPACE_SM);
         if secondary_button(ui, "Recalibrate now").clicked() {
-            ctx.engine
-                .send(padcore::engine::EngineCommand::Recalibrate);
+            ctx.engine.send(padcore::engine::EngineCommand::Recalibrate);
             ctx.state
                 .toast("Hold the sticks still...", ToastLevel::Info);
         }

@@ -170,8 +170,13 @@ mod autostart {
         unsafe {
             let mut key: HKEY = std::ptr::null_mut();
             let subkey = wide(SUBKEY);
-            let status =
-                RegOpenKeyExW(std::ptr::null_mut(), subkey.as_ptr(), 0, KEY_WRITE, &mut key);
+            let status = RegOpenKeyExW(
+                std::ptr::null_mut(),
+                subkey.as_ptr(),
+                0,
+                KEY_WRITE,
+                &mut key,
+            );
             if status != ERROR_SUCCESS {
                 return Err(std::io::Error::from_raw_os_error(status as i32));
             }

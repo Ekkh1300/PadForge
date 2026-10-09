@@ -79,10 +79,18 @@ pub fn install(ctx: &egui::Context) {
 
     // Type scale: a clear jump between headings and body, and a slightly larger
     // body size than egui's default because this is a dense control panel.
-    style.text_styles.insert(egui::TextStyle::Heading, FontId::proportional(21.0));
-    style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(14.0));
-    style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(14.0));
-    style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(12.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Heading, FontId::proportional(21.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Body, FontId::proportional(14.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Button, FontId::proportional(14.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Small, FontId::proportional(12.0));
     style
         .text_styles
         .insert(egui::TextStyle::Monospace, FontId::monospace(13.0));
@@ -281,7 +289,12 @@ mod tests {
         // The accent must survive into the widget visuals, otherwise nothing
         // would ever light up.
         assert_eq!(
-            ctx.style_of(egui::Theme::Dark).visuals.widgets.hovered.bg_stroke.color,
+            ctx.style_of(egui::Theme::Dark)
+                .visuals
+                .widgets
+                .hovered
+                .bg_stroke
+                .color,
             ACCENT_DIM
         );
     }

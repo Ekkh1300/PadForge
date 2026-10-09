@@ -1,4 +1,4 @@
-﻿//! DualShock 4 discovery and streaming.
+//! DualShock 4 discovery and streaming.
 //!
 //! Discovery goes through hidapi rather than raw Win32 so the same code builds
 //! anywhere hidapi does; the two report layouts (USB and Bluetooth) are handled
@@ -129,12 +129,7 @@ impl Calibration {
 
     /// All four offsets, for callers that want them together.
     pub fn offsets(&self) -> (i16, i16, i16, i16) {
-        (
-            self.left_x(),
-            self.left_y(),
-            self.right_x(),
-            self.right_y(),
-        )
+        (self.left_x(), self.left_y(), self.right_x(), self.right_y())
     }
 
     pub fn is_captured(&self) -> bool {
@@ -387,7 +382,8 @@ fn run(
                         }
                     }
                 }
-                Err(hidapi::HidError::IoError { .. }) | Err(hidapi::HidError::HidApiError { .. }) => {
+                Err(hidapi::HidError::IoError { .. })
+                | Err(hidapi::HidError::HidApiError { .. }) => {
                     // The handle went away: unplugged, suspended, or reset.
                     dead = true;
                 }
@@ -415,7 +411,8 @@ pub fn enumerate() -> Vec<DeviceInfo> {
     };
     api.device_list()
         .filter(|d| {
-            d.vendor_id() == report::SONY_VENDOR_ID && report::DS4_PRODUCT_IDS.contains(&d.product_id())
+            d.vendor_id() == report::SONY_VENDOR_ID
+                && report::DS4_PRODUCT_IDS.contains(&d.product_id())
         })
         .map(describe)
         .collect()

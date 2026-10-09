@@ -46,8 +46,9 @@ impl App {
     /// Send the initial settings, hotkeys and profiles to the engine, so its
     /// first frame already reflects the user's configuration.
     fn push_initial_commands(&mut self) {
-        self.engine
-            .send(EngineCommand::ApplySettings(Box::new(self.state.settings.clone())));
+        self.engine.send(EngineCommand::ApplySettings(Box::new(
+            self.state.settings.clone(),
+        )));
         let store = self.state.store.clone();
         self.engine
             .send(EngineCommand::ApplyProfiles(Box::new(store)));
@@ -360,7 +361,11 @@ impl App {
                 .color(if selected { BACKDROP } else { TEXT_MUTED })
                 .size(13.0);
             let button = egui::Button::new(text)
-                .fill(if selected { ACCENT } else { Color32::TRANSPARENT })
+                .fill(if selected {
+                    ACCENT
+                } else {
+                    Color32::TRANSPARENT
+                })
                 .stroke(Stroke::NONE)
                 .corner_radius(RADIUS_SM)
                 .min_size(egui::vec2(ui.available_width(), 32.0));

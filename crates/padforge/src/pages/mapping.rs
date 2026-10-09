@@ -1,8 +1,8 @@
 //! Mapping page: reassign every DS4 control to any XInput target.
+use crate::theme::*;
 use egui::{RichText, Stroke};
 use padcore::engine::EngineCommand;
 use padcore::mapping::{Ds4Control, X360Control};
-use crate::theme::*;
 
 #[allow(clippy::too_many_lines)]
 pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
@@ -59,7 +59,12 @@ fn group_card(
     });
 }
 /// One input on the left, one target on the right.
-fn mapping_row(ui: &mut egui::Ui, ctx: &mut super::Ctx, control: Ds4Control, t: &padcore::engine::Telemetry) {
+fn mapping_row(
+    ui: &mut egui::Ui,
+    ctx: &mut super::Ctx,
+    control: Ds4Control,
+    t: &padcore::engine::Telemetry,
+) {
     let mapping = ctx.state.editing_profile().mapping_for(control);
     let held = control_is_held(control, t);
     ui.horizontal(|ui| {
@@ -70,13 +75,14 @@ fn mapping_row(ui: &mut egui::Ui, ctx: &mut super::Ctx, control: Ds4Control, t: 
                 .size(12.5),
         )
         .fill(if held { ACCENT } else { SURFACE })
-        .stroke(Stroke::new(
-            1.0,
-            if held { ACCENT } else { BORDER },
-        ))
+        .stroke(Stroke::new(1.0, if held { ACCENT } else { BORDER }))
         .corner_radius(RADIUS_SM)
         .min_size(egui::vec2(140.0, 26.0));
-        if ui.add(source).on_hover_text("Click to pick a new target").clicked() {
+        if ui
+            .add(source)
+            .on_hover_text("Click to pick a new target")
+            .clicked()
+        {
             ctx.state.toast(
                 format!("{} -> {}", control.label(), mapping.target.label()),
                 crate::state::ToastLevel::Info,
@@ -86,7 +92,13 @@ fn mapping_row(ui: &mut egui::Ui, ctx: &mut super::Ctx, control: Ds4Control, t: 
         // Target selector.
         let mut selected = mapping.target;
         egui::ComboBox::from_id_salt(("target", control))
-            .selected_text(RichText::new(selected.label()).color(if mapping.is_active() { ACCENT } else { TEXT_FAINT }))
+            .selected_text(
+                RichText::new(selected.label()).color(if mapping.is_active() {
+                    ACCENT
+                } else {
+                    TEXT_FAINT
+                }),
+            )
             .width(160.0)
             .show_ui(ui, |ui| {
                 for target in target_options() {
@@ -232,7 +244,12 @@ fn control_is_held(control: Ds4Control, t: &padcore::engine::Telemetry) -> bool 
 fn touchpad_card(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
     use padcore::touchpad::TouchpadMode;
     card().show(ui, |ui| {
-        ui.label(RichText::new("Touchpad behaviour").color(TEXT).size(14.0).strong());
+        ui.label(
+            RichText::new("Touchpad behaviour")
+                .color(TEXT)
+                .size(14.0)
+                .strong(),
+        );
         ui.add_space(SPACE_SM);
         let mode = ctx.state.editing_profile().touchpad.mode;
         egui::ComboBox::from_id_salt("touch_mode")
@@ -244,7 +261,11 @@ fn touchpad_card(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
             })
             .width(200.0)
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut ctx.state.editing_profile_mut().touchpad.mode, TouchpadMode::Off, "Off");
+                ui.selectable_value(
+                    &mut ctx.state.editing_profile_mut().touchpad.mode,
+                    TouchpadMode::Off,
+                    "Off",
+                );
                 ui.selectable_value(
                     &mut ctx.state.editing_profile_mut().touchpad.mode,
                     TouchpadMode::Mouse,
@@ -272,10 +293,7 @@ fn touchpad_card(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                 )
                 .changed()
             {
-                ctx.state
-                    .editing_profile_mut()
-                    .touchpad
-                    .sensitivity = sensitivity;
+                ctx.state.editing_profile_mut().touchpad.sensitivity = sensitivity;
                 push_store(ctx);
             }
         }
@@ -295,8 +313,10 @@ fn presets_card(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         ui.horizontal(|ui| {
             if secondary_button(ui, "PlayStation layout").clicked() {
                 apply_preset(ctx, preset_playstation());
-                ctx.state
-                    .toast("Applied the PlayStation layout", crate::state::ToastLevel::Success);
+                ctx.state.toast(
+                    "Applied the PlayStation layout",
+                    crate::state::ToastLevel::Success,
+                );
             }
             if secondary_button(ui, "Xbox layout").clicked() {
                 apply_preset(ctx, preset_xbox());
@@ -349,13 +369,9 @@ fn preset_xbox() -> Preset {
 /// Every preset must bind the same set of controls as the default profile,
 /// otherwise applying one silently unbinds whatever it forgot.
 fn assert_preset_is_complete(preset: &Preset) {
-    let covered: std::collections::HashSet<Ds4Control> =
-        preset.iter().map(|(c, _)| *c).collect();
+    let covered: std::collections::HashSet<Ds4Control> = preset.iter().map(|(c, _)| *c).collect();
     for control in Ds4Control::ALL {
-        let expected = matches!(
-            control,
-            Ds4Control::DpadAny | Ds4Control::TouchpadGesture
-        );
+        let expected = matches!(control, Ds4Control::DpadAny | Ds4Control::TouchpadGesture);
         assert_eq!(
             covered.contains(control),
             !expected,

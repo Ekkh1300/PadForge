@@ -1,4 +1,4 @@
-﻿//! Icons, generated at runtime rather than shipped as image files.
+//! Icons, generated at runtime rather than shipped as image files.
 //!
 //! A tray icon and a window icon are tiny, and generating them keeps the binary
 //! free of binary assets while staying crisp at any size.
@@ -104,7 +104,10 @@ mod tests {
         // The corners are cut away by the rounded square, so transparency there
         // is expected; what matters is that *some* pixels are drawn.
         let opaque = rgba.chunks_exact(4).filter(|p| p[3] == 0xFF).count();
-        assert!(opaque > 64 * 64 / 2, "icon is mostly transparent: {opaque} px");
+        assert!(
+            opaque > 64 * 64 / 2,
+            "icon is mostly transparent: {opaque} px"
+        );
         // And that nothing is drawn outside the rounded square's alpha range.
         assert!(rgba.chunks_exact(4).all(|p| p[3] == 0 || p[3] == 0xFF));
     }
@@ -135,6 +138,9 @@ mod tests {
             .chunks_exact(4)
             .filter(|p| p[0] == 0x35 && p[1] == 0xD0 && p[2] == 0xE8)
             .count();
-        assert!(accents > 100, "expected the rings to be visible, got {accents} px");
+        assert!(
+            accents > 100,
+            "expected the rings to be visible, got {accents} px"
+        );
     }
 }

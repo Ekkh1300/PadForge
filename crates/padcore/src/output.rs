@@ -1,4 +1,4 @@
-﻿//! Virtual gamepad output.
+//! Virtual gamepad output.
 //!
 //! Games on Windows overwhelmingly speak XInput, not HID. So the whole point of
 //! this app is to turn the DS4 report into an `XINPUT_GAMEPAD` and hand it to a
@@ -247,7 +247,9 @@ mod vigem {
 
         fn submit(&mut self, state: GamepadState) {
             self.last = state;
-            let Some(target) = self.target.as_mut() else { return };
+            let Some(target) = self.target.as_mut() else {
+                return;
+            };
             let pad = vigem_client::XGamepad {
                 buttons: vigem_client::XButtons(state.buttons),
                 left_trigger: state.left_trigger,

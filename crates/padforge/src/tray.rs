@@ -104,10 +104,7 @@ fn pump(outbox: &TrayInbox) {
                     button_state: Up,
                     ..
                 }
-                | DoubleClick {
-                    button: Left,
-                    ..
-                } => push(outbox, TrayCommand::Show),
+                | DoubleClick { button: Left, .. } => push(outbox, TrayCommand::Show),
                 Click {
                     button: Right,
                     button_state: Down,

@@ -1,4 +1,4 @@
-﻿//! Foreground process detection.
+//! Foreground process detection.
 //!
 //! Auto-profiles key off *which game is in front*, which means asking Windows
 //! for the foreground window's owning process and then resolving its image path.
@@ -170,8 +170,6 @@ fn query_path(pid: u32) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 const INVALID_HANDLE_VALUE: *mut core::ffi::c_void = -1isize as *mut core::ffi::c_void;
-
-
 
 #[cfg(test)]
 mod tests {

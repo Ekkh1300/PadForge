@@ -142,7 +142,9 @@ pub fn key_name(key: u32) -> String {
 
 /// The character a printable virtual-key code represents.
 fn printable(key: u32) -> String {
-    char::from_u32(key).map(|c| c.to_string()).unwrap_or_default()
+    char::from_u32(key)
+        .map(|c| c.to_string())
+        .unwrap_or_default()
 }
 
 /// What a hotkey does when pressed.
@@ -421,7 +423,15 @@ mod tests {
 
     #[test]
     fn describe_is_readable() {
-        let hk = Hotkey::new(Mods { ctrl: true, shift: true, alt: false, win: false }, 0x70);
+        let hk = Hotkey::new(
+            Mods {
+                ctrl: true,
+                shift: true,
+                alt: false,
+                win: false,
+            },
+            0x70,
+        );
         assert_eq!(hk.describe(), "Ctrl+Shift+F1");
     }
 

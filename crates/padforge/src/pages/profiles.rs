@@ -1,9 +1,9 @@
 //! Profiles page: create, edit, and auto-assign per-game configurations.
+use crate::state::ToastLevel;
+use crate::theme::*;
 use egui::{RichText, Stroke};
 use padcore::engine::EngineCommand;
 use padcore::profile::{AutoProfileRule, Profile};
-use crate::state::ToastLevel;
-use crate::theme::*;
 
 #[allow(clippy::too_many_lines)]
 pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
@@ -25,8 +25,7 @@ fn list(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                     ctx.state.store.add(p);
                     ctx.state.editing = ctx.state.store.active;
                     push_store(ctx);
-                    ctx.state
-                        .toast("Profile created", ToastLevel::Success);
+                    ctx.state.toast("Profile created", ToastLevel::Success);
                 }
             });
         });
@@ -55,10 +54,7 @@ fn list(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                     } else {
                         SURFACE
                     })
-                    .stroke(Stroke::new(
-                        1.0,
-                        if is_active { ACCENT } else { BORDER },
-                    ))
+                    .stroke(Stroke::new(1.0, if is_active { ACCENT } else { BORDER }))
                     .corner_radius(RADIUS_SM)
                     .min_size(egui::vec2(0.0, 30.0));
                 let response = ui.add(button);
@@ -118,7 +114,12 @@ fn list(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
 fn auto_rules(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
     card().show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Auto profiles").color(TEXT).size(15.0).strong());
+            ui.label(
+                RichText::new("Auto profiles")
+                    .color(TEXT)
+                    .size(15.0)
+                    .strong(),
+            );
         });
         ui.add_space(SPACE_SM);
         ui.label(
@@ -131,7 +132,10 @@ fn auto_rules(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         );
         ui.add_space(SPACE_MD);
         let mut enabled = ctx.state.settings.auto_profiles_enabled;
-        if ui.checkbox(&mut enabled, "Watch the foreground window").changed() {
+        if ui
+            .checkbox(&mut enabled, "Watch the foreground window")
+            .changed()
+        {
             ctx.state.settings.auto_profiles_enabled = enabled;
             push_settings(ctx);
         }
@@ -175,11 +179,7 @@ fn auto_rules(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                         .width(120.0)
                         .show_ui(ui, |ui| {
                             for (id, name) in &profiles {
-                                ui.selectable_value(
-                                    &mut profile_id,
-                                    id.clone(),
-                                    name.clone(),
-                                );
+                                ui.selectable_value(&mut profile_id, id.clone(), name.clone());
                             }
                         });
                     if profile_id != rule.profile_id {
@@ -195,7 +195,11 @@ fn auto_rules(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                             slot.enabled = on;
                         }
                     }
-                    if ui.small_button("X").on_hover_text("Remove this rule").clicked() {
+                    if ui
+                        .small_button("X")
+                        .on_hover_text("Remove this rule")
+                        .clicked()
+                    {
                         to_remove = Some(i);
                     }
                 });
@@ -251,16 +255,22 @@ fn auto_rules(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         });
         ui.add_space(SPACE_XS);
         ui.label(
-            RichText::new(format!("Profiles live in {}", padcore::paths::profiles_dir().display()))
-                .color(TEXT_FAINT)
-                .size(11.0),
+            RichText::new(format!(
+                "Profiles live in {}",
+                padcore::paths::profiles_dir().display()
+            ))
+            .color(TEXT_FAINT)
+            .size(11.0),
         );
     });
 }
 /// Write the active profile to a file the user picks.
 fn export_profile(ctx: &mut super::Ctx) {
     let profile = ctx.state.editing_profile().clone();
-    let suggested = format!("{}.json", profile.name.replace(|c: char| !c.is_alphanumeric(), "_"));
+    let suggested = format!(
+        "{}.json",
+        profile.name.replace(|c: char| !c.is_alphanumeric(), "_")
+    );
     let path = rfd::FileDialog::new()
         .set_title("Export profile")
         .set_file_name(&suggested)
@@ -269,16 +279,18 @@ fn export_profile(ctx: &mut super::Ctx) {
     let Some(path) = path else { return };
     match serde_json::to_string_pretty(&profile) {
         Ok(body) => match std::fs::write(&path, body) {
-            Ok(()) => ctx
-                .state
-                .toast(format!("Exported to {}", path.display()), ToastLevel::Success),
+            Ok(()) => ctx.state.toast(
+                format!("Exported to {}", path.display()),
+                ToastLevel::Success,
+            ),
             Err(e) => ctx
                 .state
                 .toast(format!("Could not write the file: {e}"), ToastLevel::Error),
         },
-        Err(e) => ctx
-            .state
-            .toast(format!("Could not serialise the profile: {e}"), ToastLevel::Error),
+        Err(e) => ctx.state.toast(
+            format!("Could not serialise the profile: {e}"),
+            ToastLevel::Error,
+        ),
     }
 }
 /// Read a profile from disk and add it to the store.
@@ -298,12 +310,12 @@ fn import_profile(ctx: &mut super::Ctx) {
                 ctx.state.store.add(p);
                 ctx.state.editing = ctx.state.store.active;
                 push_store(ctx);
-                ctx.state
-                    .toast("Profile imported", ToastLevel::Success);
+                ctx.state.toast("Profile imported", ToastLevel::Success);
             }
-            Err(e) => ctx
-                .state
-                .toast(format!("That is not a PadForge profile: {e}"), ToastLevel::Error),
+            Err(e) => ctx.state.toast(
+                format!("That is not a PadForge profile: {e}"),
+                ToastLevel::Error,
+            ),
         },
         Err(e) => ctx
             .state

@@ -1,4 +1,4 @@
-﻿//! DualShock 4 HID report decoding.
+//! DualShock 4 HID report decoding.
 //!
 //! The DS4 speaks two closely related report layouts depending on how it is
 //! connected, and the difference is entirely in the leading header:
@@ -409,7 +409,13 @@ fn i16le(b: &[u8]) -> i16 {
 /// Build the DS4 output report used for lightbar colour and rumble.
 ///
 /// Offsets differ per transport, matching the input report layouts.
-pub fn output_report(transport: Transport, red: u8, green: u8, blue: u8, rumble: Option<(u8, u8)>) -> Vec<u8> {
+pub fn output_report(
+    transport: Transport,
+    red: u8,
+    green: u8,
+    blue: u8,
+    rumble: Option<(u8, u8)>,
+) -> Vec<u8> {
     // USB reports are 64 bytes, Bluetooth 78; the trailing bytes are unused.
     let len = match transport {
         Transport::Usb => 64,
@@ -417,7 +423,7 @@ pub fn output_report(transport: Transport, red: u8, green: u8, blue: u8, rumble:
     };
     let mut buf = vec![0u8; len];
     buf[0] = 0x05; // output report id
-    // RGB brightness runs from offset 1 on both transports.
+                   // RGB brightness runs from offset 1 on both transports.
     buf[1] = red;
     buf[2] = green;
     buf[3] = blue;

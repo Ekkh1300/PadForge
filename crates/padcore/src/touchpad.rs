@@ -1,4 +1,4 @@
-﻿//! Touchpad interpretation.
+//! Touchpad interpretation.
 //!
 //! The DS4's touchpad is a genuinely useful second input surface, and it can be
 //! driven three ways:
@@ -214,12 +214,7 @@ impl TouchpadProcessor {
                 let cx = pos.0 - 0.5;
                 let cy = pos.1 - 0.5;
                 if cx.abs() >= DZ || cy.abs() >= DZ {
-                    out.dpad = (
-                        cy <= -DZ,
-                        cy >= DZ,
-                        cx <= -DZ,
-                        cx >= DZ,
-                    );
+                    out.dpad = (cy <= -DZ, cy >= DZ, cx <= -DZ, cx >= DZ);
                 }
             }
             TouchpadMode::Gestures | TouchpadMode::Off => {}
@@ -302,7 +297,11 @@ mod tests {
         });
         p.process(&touch(0.5, 0.5));
         let out = p.process(&touch(0.6, 0.5));
-        assert!((out.mouse_delta.0 - 0.1).abs() < 1e-5, "got {:?}", out.mouse_delta);
+        assert!(
+            (out.mouse_delta.0 - 0.1).abs() < 1e-5,
+            "got {:?}",
+            out.mouse_delta
+        );
         assert!(out.mouse_delta.1.abs() < 1e-5);
     }
 
@@ -318,7 +317,11 @@ mod tests {
         // One continuous touch: start left, swipe right.
         p.process(&touch(0.1, 0.5));
         let out = p.process(&touch(0.9, 0.5));
-        assert_eq!(out.gesture, Some(Gesture::TwoFingerRight), "swipe should fire");
+        assert_eq!(
+            out.gesture,
+            Some(Gesture::TwoFingerRight),
+            "swipe should fire"
+        );
 
         // Keep moving back without lifting: must not re-fire.
         let again = p.process(&touch(0.1, 0.5));
@@ -329,7 +332,11 @@ mod tests {
         let fired = p.process(&touch(0.1, 0.5));
         assert_eq!(fired.gesture, None, "still just the start of a swipe");
         let fired = p.process(&touch(0.9, 0.5));
-        assert_eq!(fired.gesture, Some(Gesture::TwoFingerRight), "release should re-arm");
+        assert_eq!(
+            fired.gesture,
+            Some(Gesture::TwoFingerRight),
+            "release should re-arm"
+        );
     }
 
     #[test]
@@ -389,7 +396,10 @@ mod tests {
 
         // Near centre: the deadzone swallows the drift.
         let mut p = mk();
-        assert_eq!(p.process(&touch(0.52, 0.5)).dpad, (false, false, false, false));
+        assert_eq!(
+            p.process(&touch(0.52, 0.5)).dpad,
+            (false, false, false, false)
+        );
 
         // Top-left corner: up and left.
         let mut p = mk();
@@ -422,6 +432,9 @@ mod tests {
         b.process(&touch(0.5, 0.5));
         let db = b.process(&touch(0.5, 0.7)).mouse_delta.1;
 
-        assert!(da > 0.0 && db < 0.0, "expected opposite signs, got {da} and {db}");
+        assert!(
+            da > 0.0 && db < 0.0,
+            "expected opposite signs, got {da} and {db}"
+        );
     }
 }

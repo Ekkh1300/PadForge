@@ -172,7 +172,9 @@ impl AppState {
     }
 
     pub fn editing_profile_mut(&mut self) -> &mut Profile {
-        let idx = self.editing.min(self.store.profiles.len().saturating_sub(1));
+        let idx = self
+            .editing
+            .min(self.store.profiles.len().saturating_sub(1));
         self.editing = idx;
         &mut self.store.profiles[idx]
     }
@@ -248,9 +250,6 @@ pub fn default_hotkeys() -> Vec<HotkeyBinding> {
                 0x7B, // F12
             )),
         ),
-        HotkeyBinding::new(
-            HotkeyAction::Recalibrate,
-            None,
-        ),
+        HotkeyBinding::new(HotkeyAction::Recalibrate, None),
     ]
 }

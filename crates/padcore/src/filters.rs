@@ -44,9 +44,7 @@ pub enum Curve {
         y: [f32; 3],
     },
     /// Snaps the axis to 0 or +/-1 once past `threshold`. Great for racing wheels.
-    Stepped {
-        threshold: f32,
-    },
+    Stepped { threshold: f32 },
 }
 
 impl Curve {
@@ -126,9 +124,13 @@ fn cubic(p0: f32, p1: f32, p2: f32, t: f32) -> f32 {
 pub enum Smoothing {
     Off,
     /// Exponential moving average. `alpha` is the new-sample weight.
-    Exponential { alpha: f32 },
+    Exponential {
+        alpha: f32,
+    },
     /// Sliding window mean, which kills spikes but adds real latency.
-    WeightedAverage { window: usize },
+    WeightedAverage {
+        window: usize,
+    },
 }
 
 /// Stateful filter for a single axis. Construct one per axis and feed it in
@@ -253,7 +255,10 @@ mod tests {
         f.deadzone = 0.3;
         f.anti_deadzone = true;
         let top = f.apply(1.0);
-        assert!((top - 1.0).abs() < 0.001, "anti-deadzone should reach 1.0, got {top}");
+        assert!(
+            (top - 1.0).abs() < 0.001,
+            "anti-deadzone should reach 1.0, got {top}"
+        );
     }
 
     #[test]

@@ -1,10 +1,10 @@
 //! The dashboard: at-a-glance health, the live pad, and the primary controls.
-use egui::epaint::MarginF32;
-use egui::{Align2, FontId, RichText, Stroke};
-use padcore::engine::EngineCommand;
 use crate::state::{Page, ToastLevel};
 use crate::theme::*;
 use crate::widgets::{self, PadPreview};
+use egui::epaint::MarginF32;
+use egui::{Align2, FontId, RichText, Stroke};
+use padcore::engine::EngineCommand;
 
 #[allow(clippy::too_many_lines)]
 pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
@@ -17,12 +17,7 @@ pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
     ui.columns(2, |cols| {
         let left = &mut cols[0];
         card().show(left, |ui| {
-            ui.label(
-                RichText::new("Live input")
-                    .color(TEXT)
-                    .size(15.0)
-                    .strong(),
-            );
+            ui.label(RichText::new("Live input").color(TEXT).size(15.0).strong());
             ui.add_space(SPACE_SM);
             let mut preview = PadPreview {
                 report: telemetry.report.clone(),
@@ -55,11 +50,17 @@ pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                 }
                 if secondary_button(ui, "~  Recalibrate").clicked() {
                     ctx.engine.send(EngineCommand::Recalibrate);
-                    ctx.state.toast("Hold the sticks still...", ToastLevel::Info);
+                    ctx.state
+                        .toast("Hold the sticks still...", ToastLevel::Info);
                 }
             });
             ui.add_space(SPACE_MD);
-            ui.label(RichText::new("ACTIVE PROFILE").color(TEXT_FAINT).size(11.0).strong());
+            ui.label(
+                RichText::new("ACTIVE PROFILE")
+                    .color(TEXT_FAINT)
+                    .size(11.0)
+                    .strong(),
+            );
             ui.add_space(SPACE_XS);
             // Profile picker, as a row of chips.
             //
@@ -111,23 +112,13 @@ pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                     ui.set_width(col_w);
                     widgets::axis_bar(ui, "Left X", r.left_x, ACCENT);
                     widgets::axis_bar(ui, "Left Y", r.left_y, ACCENT);
-                    widgets::trigger_bar(
-                        ui,
-                        "L2",
-                        r.l2,
-                        buttons.any(padcore::report::Buttons::L2),
-                    );
+                    widgets::trigger_bar(ui, "L2", r.l2, buttons.any(padcore::report::Buttons::L2));
                 });
                 ui.vertical(|ui| {
                     ui.set_width(col_w);
                     widgets::axis_bar(ui, "Right X", r.right_x, ACCENT);
                     widgets::axis_bar(ui, "Right Y", r.right_y, ACCENT);
-                    widgets::trigger_bar(
-                        ui,
-                        "R2",
-                        r.r2,
-                        buttons.any(padcore::report::Buttons::R2),
-                    );
+                    widgets::trigger_bar(ui, "R2", r.r2, buttons.any(padcore::report::Buttons::R2));
                 });
             });
             ui.add_space(SPACE_SM);
@@ -256,16 +247,12 @@ pub fn logo(ui: &mut egui::Ui, accent: egui::Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     // Two interlocking rings: a pad and a bridge.
-    painter.circle_stroke(
-        rect.center(),
-        11.0,
-        Stroke::new(2.0, accent),
-        );
+    painter.circle_stroke(rect.center(), 11.0, Stroke::new(2.0, accent));
     painter.circle_stroke(
         rect.center(),
         5.0,
         Stroke::new(2.0, accent.gamma_multiply(0.6)),
-        );
+    );
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,

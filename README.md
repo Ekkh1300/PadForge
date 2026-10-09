@@ -95,11 +95,28 @@ cargo build -p padforge --release
 cargo build -p padforge-installer --release
 ```
 
+## Status
+
+Complete and tested: 123 tests pass, `cargo fmt` and `cargo clippy` are clean
+under `-D warnings`, and rustdoc builds without warnings. CI runs all of it on
+every push.
+
+One thing is **not** verified: how the interface actually looks. Every egui/glow
+window on the machine this was developed on renders as a solid white rectangle.
+That is a graphics driver problem rather than an application one — a minimal
+egui example sharing no code renders identically white, and `App::ui` provably
+runs with the right layout rect and theme. See
+[issue #1](https://github.com/Ekkh1300/PadForge/issues/1) for the full trace.
+
+Four capabilities from DS4Windows are also not ported yet, listed in
+[issue #2](https://github.com/Ekkh1300/PadForge/issues/2).
+
 ## Testing
 
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets
+cargo fmt --all -- --check
 ```
 
 The test suite covers the parts where being subtly wrong is invisible until a

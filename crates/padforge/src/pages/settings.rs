@@ -1,9 +1,9 @@
 //! Settings page: window behaviour, startup, hotkeys, logs, and diagnostics.
+use crate::state::ToastLevel;
+use crate::theme::*;
 use egui::{RichText, Stroke};
 use padcore::engine::EngineCommand;
 use padcore::hotkey::{HotkeyAction, HotkeyBinding, Mods};
-use crate::state::ToastLevel;
-use crate::theme::*;
 
 #[allow(clippy::too_many_lines)]
 pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
@@ -42,13 +42,24 @@ fn general(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         );
         ui.add_space(SPACE_SM);
         ui.checkbox(&mut s.start_minimized, "Start hidden in the tray");
-        ui.checkbox(&mut s.auto_reapply_profile, "Re-apply the profile on reconnect");
+        ui.checkbox(
+            &mut s.auto_reapply_profile,
+            "Re-apply the profile on reconnect",
+        );
         ui.add_space(SPACE_MD);
         divider(ui);
         ui.add_space(SPACE_MD);
-        ui.label(RichText::new("AUTO PROFILES").color(TEXT_FAINT).size(11.0).strong());
+        ui.label(
+            RichText::new("AUTO PROFILES")
+                .color(TEXT_FAINT)
+                .size(11.0)
+                .strong(),
+        );
         ui.add_space(SPACE_SM);
-        ui.checkbox(&mut s.auto_profiles_enabled, "Switch profiles by foreground window");
+        ui.checkbox(
+            &mut s.auto_profiles_enabled,
+            "Switch profiles by foreground window",
+        );
         let mut interval = s.auto_profile_interval_ms as f32;
         if ui
             .add(
@@ -71,8 +82,7 @@ fn general(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                     ctx.state
                         .toast(format!("Could not save settings: {e}"), ToastLevel::Error);
                 } else {
-                    ctx.state
-                        .toast("Settings saved", ToastLevel::Success);
+                    ctx.state.toast("Settings saved", ToastLevel::Success);
                 }
             }
             if secondary_button(ui, "Revert").clicked() {
@@ -86,7 +96,12 @@ fn general(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
 /// Global hotkeys, with a capture mode.
 fn hotkeys(ui: &mut egui::Ui, ctx: &mut super::Ctx, keys: &[egui::Event]) {
     card().show(ui, |ui| {
-        ui.label(RichText::new("Global hotkeys").color(TEXT).size(15.0).strong());
+        ui.label(
+            RichText::new("Global hotkeys")
+                .color(TEXT)
+                .size(15.0)
+                .strong(),
+        );
         ui.add_space(SPACE_SM);
         ui.label(
             RichText::new(
@@ -127,7 +142,10 @@ fn hotkeys(ui: &mut egui::Ui, ctx: &mut super::Ctx, keys: &[egui::Event]) {
                         .fill(SURFACE)
                         .stroke(Stroke::new(1.0, BORDER))
                         .corner_radius(RADIUS_SM);
-                        if ui.add(btn).on_hover_text("Click, then press a combination").clicked()
+                        if ui
+                            .add(btn)
+                            .on_hover_text("Click, then press a combination")
+                            .clicked()
                         {
                             ctx.state.capturing = Some(i);
                         }
@@ -219,8 +237,7 @@ fn capture_banner(ui: &mut egui::Ui, row: usize, ctx: &mut super::Ctx, keys: &[e
         }
         ctx.state.capturing = None;
         push_hotkeys(ctx);
-        ctx.state
-            .toast("Hotkey registered", ToastLevel::Success);
+        ctx.state.toast("Hotkey registered", ToastLevel::Success);
     }
 }
 /// Autostart, and the config location.
@@ -229,7 +246,10 @@ fn startup(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         ui.label(RichText::new("Startup").color(TEXT).size(15.0).strong());
         ui.add_space(SPACE_MD);
         let mut autostart = padcore::settings::autostart_enabled();
-        if ui.checkbox(&mut autostart, "Start PadForge when I log in").changed() {
+        if ui
+            .checkbox(&mut autostart, "Start PadForge when I log in")
+            .changed()
+        {
             match padcore::settings::set_autostart(autostart) {
                 Ok(()) => {
                     ctx.state.toast(
@@ -241,10 +261,9 @@ fn startup(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                         ToastLevel::Success,
                     );
                 }
-                Err(e) => ctx.state.toast(
-                    format!("Could not update startup: {e}"),
-                    ToastLevel::Error,
-                ),
+                Err(e) => ctx
+                    .state
+                    .toast(format!("Could not update startup: {e}"), ToastLevel::Error),
             }
         }
         ui.label(
@@ -291,13 +310,17 @@ fn diagnostics(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         if ui.checkbox(&mut debug, "Verbose logging").changed() {
             ctx.state.settings.debug_logging = debug;
             push(ctx);
-            ctx.state
-                .toast("Takes effect on restart", ToastLevel::Info);
+            ctx.state.toast("Takes effect on restart", ToastLevel::Info);
         }
         ui.add_space(SPACE_MD);
         divider(ui);
         ui.add_space(SPACE_MD);
-        ui.label(RichText::new("STATUS").color(TEXT_FAINT).size(11.0).strong());
+        ui.label(
+            RichText::new("STATUS")
+                .color(TEXT_FAINT)
+                .size(11.0)
+                .strong(),
+        );
         ui.add_space(SPACE_SM);
         egui::Grid::new("diag")
             .num_columns(2)
@@ -329,33 +352,19 @@ fn diagnostics(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                             "not captured".into()
                         },
                     ),
-                    (
-                        "active profile",
-                        telemetry.profile_name.clone(),
-                    ),
-                    (
-                        "packets",
-                        telemetry.packets.to_string(),
-                    ),
+                    ("active profile", telemetry.profile_name.clone()),
+                    ("packets", telemetry.packets.to_string()),
                 ];
                 for (label, value) in rows {
                     ui.label(RichText::new(label).color(TEXT_MUTED).size(11.5));
-                    ui.label(
-                        RichText::new(value)
-                            .color(TEXT)
-                            .size(11.5)
-                            .monospace(),
-                    );
+                    ui.label(RichText::new(value).color(TEXT).size(11.5).monospace());
                     ui.end_row();
                 }
             });
         ui.add_space(SPACE_MD);
         if secondary_button(ui, "Open the data folder").clicked() {
             let dir = padcore::paths::config_dir();
-            if let Err(e) = std::process::Command::new("explorer")
-                .arg(&dir)
-                .spawn()
-            {
+            if let Err(e) = std::process::Command::new("explorer").arg(&dir).spawn() {
                 ctx.state.toast(
                     format!("Could not open {}: {e}", dir.display()),
                     ToastLevel::Error,
@@ -454,6 +463,5 @@ fn push(ctx: &mut super::Ctx) {
 }
 fn push_hotkeys(ctx: &mut super::Ctx) {
     let bindings = ctx.state.hotkeys.clone();
-    ctx.engine
-        .send(EngineCommand::ApplyHotkeys(bindings));
+    ctx.engine.send(EngineCommand::ApplyHotkeys(bindings));
 }

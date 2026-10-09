@@ -277,8 +277,20 @@ impl GyroPointer {
         self.remainder.reset_on_reversal(dx, dy);
 
         let (weight_x, weight_y) = direction_weights(dx, dy);
-        let sign_x = if dx > 0.0 { 1.0 } else if dx < 0.0 { -1.0 } else { 0.0 };
-        let sign_y = if dy > 0.0 { 1.0 } else if dy < 0.0 { -1.0 } else { 0.0 };
+        let sign_x = if dx > 0.0 {
+            1.0
+        } else if dx < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
+        let sign_y = if dy > 0.0 {
+            1.0
+        } else if dy < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
 
         // Directional deadzone, in raw counts.
         let deadzone_x = (weight_x * GYRO_MOUSE_DEADZONE as f64) as i32;
@@ -376,8 +388,20 @@ impl TouchpadPointer {
         self.remainder.reset_on_reversal(dx, dy);
 
         let (weight_x, weight_y) = direction_weights(dx, dy);
-        let sign_x = if dx > 0.0 { 1.0 } else if dx < 0.0 { -1.0 } else { 0.0 };
-        let sign_y = if dy > 0.0 { 1.0 } else if dy < 0.0 { -1.0 } else { 0.0 };
+        let sign_x = if dx > 0.0 {
+            1.0
+        } else if dx < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
+        let sign_y = if dy > 0.0 {
+            1.0
+        } else if dy < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
 
         let coefficient = self.config.touch_sensitivity as f64 * 0.01;
 
@@ -672,7 +696,10 @@ mod tests {
         for magnitude in [0.01, 0.05, 0.1, 0.2, threshold * 0.99] {
             for (motion, sign) in [(magnitude, 1.0), (magnitude, -1.0)] {
                 let out = apply_jitter(motion, sign, 1.0, GYRO_JITTER_THRESHOLD);
-                assert!(out.abs() < magnitude, "{magnitude} should shrink, got {out}");
+                assert!(
+                    out.abs() < magnitude,
+                    "{magnitude} should shrink, got {out}"
+                );
                 assert_eq!(out.is_sign_positive(), sign > 0.0, "sign flipped");
             }
         }
@@ -789,8 +816,14 @@ mod tests {
         };
         let mut p = TouchpadPointer::new(config);
         let (x, y) = p.process(10.0, 0.0);
-        assert!(x.abs() <= 1, "a quarter turn should leave no horizontal motion, got {x}");
-        assert!((y - 10).abs() <= 1, "a quarter turn should move fully vertical, got {y}");
+        assert!(
+            x.abs() <= 1,
+            "a quarter turn should leave no horizontal motion, got {x}"
+        );
+        assert!(
+            (y - 10).abs() <= 1,
+            "a quarter turn should move fully vertical, got {y}"
+        );
     }
 
     #[test]

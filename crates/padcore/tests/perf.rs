@@ -71,7 +71,10 @@ fn running_touchpad() -> TouchpadProcessor {
 /// that case, so benchmarking the default would measure an early return rather
 /// than the work a user with motion aiming switched on actually pays for.
 fn running_gyro() -> GyroProcessor {
-    GyroProcessor::new(padcore::gyro::GyroConfig { enabled: true, ..Default::default() })
+    GyroProcessor::new(padcore::gyro::GyroConfig {
+        enabled: true,
+        ..Default::default()
+    })
 }
 
 /// A filter shaped the way a real stick axis is: a small deadzone, a bezier
@@ -81,7 +84,10 @@ fn configured_filter(smoothing: Smoothing) -> AxisFilter {
     // private runtime state that a literal would leave unset.
     let mut filter = AxisFilter::new();
     filter.deadzone = 0.08;
-    filter.curve = Curve::Bezier { x: [0.0, 0.4, 1.0], y: [0.0, 0.06, 1.0] };
+    filter.curve = Curve::Bezier {
+        x: [0.0, 0.4, 1.0],
+        y: [0.0, 0.06, 1.0],
+    };
     filter.anti_deadzone = true;
     filter.smoothing = smoothing;
     filter.sensitivity = 1.6;
@@ -111,15 +117,28 @@ fn hot_path_stages_are_within_budget() {
     });
 
     let mut gyro = running_gyro();
-    let motion = Gyro { yaw: 0.4, pitch: -0.2, roll: 0.1 };
-    let gyro_ns = ns_per_sample(|_| { let _ = std::hint::black_box(gyro.process(&motion, 0.001)); });
+    let motion = Gyro {
+        yaw: 0.4,
+        pitch: -0.2,
+        roll: 0.1,
+    };
+    let gyro_ns = ns_per_sample(|_| {
+        let _ = std::hint::black_box(gyro.process(&motion, 0.001));
+    });
 
     let mut pointer = GyroPointer::new(PointerConfig::default());
-    let pointer_ns = ns_per_sample(|_| { let _ = std::hint::black_box(pointer.process(&motion, 0.001)); });
+    let pointer_ns = ns_per_sample(|_| {
+        let _ = std::hint::black_box(pointer.process(&motion, 0.001));
+    });
 
     let mut touch = running_touchpad();
-    let fingers = TouchState { pad_touched: true, ..Default::default() };
-    let touch_ns = ns_per_sample(|_| { let _ = std::hint::black_box(touch.process(&fingers)); });
+    let fingers = TouchState {
+        pad_touched: true,
+        ..Default::default()
+    };
+    let touch_ns = ns_per_sample(|_| {
+        let _ = std::hint::black_box(touch.process(&fingers));
+    });
 
     // A generous ceiling: these all measure in tens of nanoseconds, so a budget
     // of a microsecond still catches a change that turns a subtraction into an
@@ -128,7 +147,11 @@ fn hot_path_stages_are_within_budget() {
 
     let mut ok = true;
     ok &= report("axis filter (exponential smoothing)", ema_ns, BUDGET_NS);
-    ok &= report("axis filter (16-wide weighted window)", window_ns, BUDGET_NS);
+    ok &= report(
+        "axis filter (16-wide weighted window)",
+        window_ns,
+        BUDGET_NS,
+    );
     ok &= report("gyro integrate + filter", gyro_ns, BUDGET_NS);
     ok &= report("gyro to pointer", pointer_ns, BUDGET_NS);
     ok &= report("touchpad routing", touch_ns, BUDGET_NS);
@@ -156,7 +179,11 @@ fn full_loop_clears_one_millisecond_per_frame() {
     ];
     let mut gyro = running_gyro();
     let mut pointer = GyroPointer::new(PointerConfig::default());
-    let motion = Gyro { yaw: 0.3, pitch: -0.15, roll: 0.05 };
+    let motion = Gyro {
+        yaw: 0.3,
+        pitch: -0.15,
+        roll: 0.05,
+    };
 
     let start = Instant::now();
     for i in 0..FRAMES {
@@ -181,7 +208,10 @@ fn full_loop_clears_one_millisecond_per_frame() {
     println!("  measured {per_frame:.0} ns/frame");
     println!("  budget   {FRAME_BUDGET_NS:.0} ns/frame (1 kHz report rate)");
     println!("  headroom {:.0}x", FRAME_BUDGET_NS / per_frame);
-    println!("  of one core: {:.4} %\n", elapsed / FRAMES as f64 * 100_000.0);
+    println!(
+        "  of one core: {:.4} %\n",
+        elapsed / FRAMES as f64 * 100_000.0
+    );
 
     assert!(
         per_frame < FRAME_BUDGET_NS,
@@ -200,8 +230,7 @@ fn hot_path_does_not_allocate() {
     // A global allocator can only be installed once per program, so the counter
     // is always active and read selectively. It counts only allocations that
     // happen while the flag is set, which keeps other tests unaffected.
-    static COUNTING: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
+    static COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static ALLOCS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     /// Wraps the real allocator and tallies the calls made while armed.
@@ -249,8 +278,15 @@ fn hot_path_does_not_allocate() {
     let mut gyro = running_gyro();
     let mut pointer = GyroPointer::new(PointerConfig::default());
     let mut touch = running_touchpad();
-    let motion = Gyro { yaw: 0.4, pitch: -0.2, roll: 0.1 };
-    let fingers = TouchState { pad_touched: true, ..Default::default() };
+    let motion = Gyro {
+        yaw: 0.4,
+        pitch: -0.2,
+        roll: 0.1,
+    };
+    let fingers = TouchState {
+        pad_touched: true,
+        ..Default::default()
+    };
 
     for i in 0..64 {
         let raw = (i as f32 / 32.0) - 1.0;

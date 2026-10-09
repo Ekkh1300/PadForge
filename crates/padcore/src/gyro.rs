@@ -1,4 +1,4 @@
-﻿//! Motion controls: gyro-as-mouse and gyro-as-stick.
+//! Motion controls: gyro-as-mouse and gyro-as-stick.
 //!
 //! The DS4's gyro reports angular *velocity*, so turning it into cursor movement
 //! means integrating over time. That integration is what makes gyro aiming feel
@@ -70,10 +70,15 @@ impl GyroInvert {
 pub enum GyroSmoothing {
     None,
     /// Single-pole low pass. `cutoff` in Hz; lower is smoother but laggier.
-    LowPass { cutoff: f32 },
+    LowPass {
+        cutoff: f32,
+    },
     /// 1€ filter: low latency when moving fast, smooth when still. The best
     /// default for aiming.
-    OneEuro { min_cutoff: f32, beta: f32 },
+    OneEuro {
+        min_cutoff: f32,
+        beta: f32,
+    },
 }
 
 /// All tunable gyro behaviour.
@@ -256,7 +261,10 @@ impl GyroProcessor {
         }
 
         // Integrate to a per-frame delta, then drop negligible motion.
-        let mut delta = GyroDelta { x: x * dt, y: y * dt };
+        let mut delta = GyroDelta {
+            x: x * dt,
+            y: y * dt,
+        };
         if delta.x.abs() < self.config.min_threshold && delta.y.abs() < self.config.min_threshold {
             delta = GyroDelta::default();
         }
@@ -328,7 +336,11 @@ mod tests {
     #[test]
     fn disabled_produces_nothing() {
         let mut p = GyroProcessor::new(GyroConfig::default());
-        let g = Gyro { pitch: 90.0, yaw: 90.0, roll: 0.0 };
+        let g = Gyro {
+            pitch: 90.0,
+            yaw: 90.0,
+            roll: 0.0,
+        };
         assert!(p.process(&g, 0.008).is_zero());
     }
 
@@ -341,7 +353,14 @@ mod tests {
             ..Default::default()
         };
         let mut p = GyroProcessor::new(cfg);
-        let d = p.process(&Gyro { yaw: 2.0, pitch: 2.0, roll: 0.0 }, 0.008);
+        let d = p.process(
+            &Gyro {
+                yaw: 2.0,
+                pitch: 2.0,
+                roll: 0.0,
+            },
+            0.008,
+        );
         assert!(d.is_zero(), "got {d:?}");
     }
 
@@ -355,7 +374,11 @@ mod tests {
             ..Default::default()
         };
         let mut p = GyroProcessor::new(cfg);
-        let g = Gyro { pitch: 10_000.0, yaw: 10_000.0, roll: 0.0 };
+        let g = Gyro {
+            pitch: 10_000.0,
+            yaw: 10_000.0,
+            roll: 0.0,
+        };
         let d = p.process(&g, 0.008);
         let mag = (d.x * d.x + d.y * d.y).sqrt();
         assert!(mag <= 10.0 + 0.001, "magnitude {mag} exceeded cap");
@@ -372,7 +395,11 @@ mod tests {
             ..Default::default()
         };
         let mut p = GyroProcessor::new(cfg);
-        let g = Gyro { yaw: 100.0, pitch: 0.0, roll: 0.0 };
+        let g = Gyro {
+            yaw: 100.0,
+            pitch: 0.0,
+            roll: 0.0,
+        };
         let short = p.process(&g, 0.001).x;
         let long = p.process(&g, 0.010).x;
         assert!(long > short, "longer dt should move further");
@@ -389,7 +416,11 @@ mod tests {
             ..Default::default()
         };
         let mut p = GyroProcessor::new(cfg);
-        let g = Gyro { yaw: 50.0, pitch: 0.0, roll: 0.0 };
+        let g = Gyro {
+            yaw: 50.0,
+            pitch: 0.0,
+            roll: 0.0,
+        };
         let d = p.process(&g, 0.008);
         assert!(d.x < 0.0, "yaw should be negated, got {d:?}");
     }
@@ -404,7 +435,11 @@ mod tests {
             ..Default::default()
         };
         let mut p = GyroProcessor::new(cfg);
-        let g = Gyro { yaw: 50.0, pitch: 0.0, roll: 0.0 };
+        let g = Gyro {
+            yaw: 50.0,
+            pitch: 0.0,
+            roll: 0.0,
+        };
         let d = p.process(&g, 100.0);
         // Clamped to 50ms, so a finite small step rather than a huge jump.
         assert!(d.x.is_finite() && d.x.abs() < 100.0, "got {d:?}");
@@ -422,7 +457,11 @@ mod tests {
             smoothing: GyroSmoothing::LowPass { cutoff: 5.0 },
             ..Default::default()
         });
-        let g = Gyro { yaw: 200.0, pitch: 0.0, roll: 0.0 };
+        let g = Gyro {
+            yaw: 200.0,
+            pitch: 0.0,
+            roll: 0.0,
+        };
         let first = p.process(&g, 0.008).x;
         assert!(first > 0.0);
         for _ in 0..400 {

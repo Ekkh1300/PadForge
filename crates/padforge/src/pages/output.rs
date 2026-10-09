@@ -1,10 +1,10 @@
 //! Output page: what the virtual pad is doing, and where the input is going.
-use egui::{RichText, Stroke};
-use padcore::engine::EngineCommand;
-use padcore::settings::OutputMode;
 use crate::state::ToastLevel;
 use crate::theme::*;
 use crate::widgets;
+use egui::{RichText, Stroke};
+use padcore::engine::EngineCommand;
+use padcore::settings::OutputMode;
 
 #[allow(clippy::too_many_lines)]
 pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
@@ -36,7 +36,12 @@ pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
 /// Driver status, output mode, and pointer injection.
 fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Telemetry) {
     card().show(ui, |ui| {
-        ui.label(RichText::new("Virtual gamepad").color(TEXT).size(15.0).strong());
+        ui.label(
+            RichText::new("Virtual gamepad")
+                .color(TEXT)
+                .size(15.0)
+                .strong(),
+        );
         ui.add_space(SPACE_SM);
         // Status line.
         ui.horizontal(|ui| {
@@ -127,18 +132,19 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
                     );
                 }
                 ui.add_space(SPACE_XS);
-                ui.label(
-                    RichText::new(hint)
-                        .color(TEXT_FAINT)
-                        .size(11.0),
-                );
+                ui.label(RichText::new(hint).color(TEXT_FAINT).size(11.0));
             });
             ui.add_space(SPACE_XS);
         }
         ui.add_space(SPACE_MD);
         divider(ui);
         ui.add_space(SPACE_MD);
-        ui.label(RichText::new("POLLING").color(TEXT_FAINT).size(11.0).strong());
+        ui.label(
+            RichText::new("POLLING")
+                .color(TEXT_FAINT)
+                .size(11.0)
+                .strong(),
+        );
         ui.add_space(SPACE_XS);
         // A wrapping Label, not `ui.label`: the hint is longer than a
         // half-width column and would otherwise be clipped.
@@ -174,7 +180,12 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
         ui.add_space(SPACE_MD);
         divider(ui);
         ui.add_space(SPACE_MD);
-        ui.label(RichText::new("DEVICE").color(TEXT_FAINT).size(11.0).strong());
+        ui.label(
+            RichText::new("DEVICE")
+                .color(TEXT_FAINT)
+                .size(11.0)
+                .strong(),
+        );
         ui.add_space(SPACE_SM);
         // Device list, refreshed at most once a second.
         refresh_devices(ctx);
@@ -186,8 +197,7 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
             );
         } else {
             for device in &ctx.state.devices {
-                let selected =
-                    ctx.state.settings.device.serial() == device.serial.as_deref();
+                let selected = ctx.state.settings.device.serial() == device.serial.as_deref();
                 ui.horizontal(|ui| {
                     ui.radio_value(
                         &mut ctx.state.settings.device,
@@ -232,7 +242,12 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
 /// The XInput report being published, live.
 fn monitor_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Telemetry) {
     card().show(ui, |ui| {
-        ui.label(RichText::new("What games see").color(TEXT).size(15.0).strong());
+        ui.label(
+            RichText::new("What games see")
+                .color(TEXT)
+                .size(15.0)
+                .strong(),
+        );
         ui.add_space(SPACE_SM);
         if !t.output_connected {
             ui.label(
@@ -244,7 +259,12 @@ fn monitor_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
         }
         let out = &t.output;
         // Buttons, as a grid of chips that light up.
-        ui.label(RichText::new("BUTTONS").color(TEXT_FAINT).size(11.0).strong());
+        ui.label(
+            RichText::new("BUTTONS")
+                .color(TEXT_FAINT)
+                .size(11.0)
+                .strong(),
+        );
         ui.add_space(SPACE_XS);
         let pressed = out.buttons;
         let button_row: [(u16, &str); 14] = [
@@ -348,7 +368,12 @@ fn monitor_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
         ui.add_space(SPACE_MD);
         divider(ui);
         ui.add_space(SPACE_MD);
-        ui.label(RichText::new("FRAME TIMING").color(TEXT_FAINT).size(11.0).strong());
+        ui.label(
+            RichText::new("FRAME TIMING")
+                .color(TEXT_FAINT)
+                .size(11.0)
+                .strong(),
+        );
         ui.add_space(SPACE_XS);
         ui.label(
             RichText::new("Interval between HID reports, in milliseconds.")

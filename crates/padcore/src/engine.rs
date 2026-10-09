@@ -24,8 +24,8 @@ use crate::filters::{AxisFilter, Curve};
 use crate::gyro::{GyroConfig, GyroOutputMode, GyroProcessor, GyroSmoothing};
 use crate::hotkey::{HotkeyAction, HotkeyBinding, HotkeyManager};
 use crate::mapping::{Ds4Control, X360Control};
-use crate::pointer::{self, GyroPointer, MouseButton, TouchpadPointer};
 use crate::output::{GamepadState, NullBackend, OutputBackend, XButtons};
+use crate::pointer::{self, GyroPointer, MouseButton, TouchpadPointer};
 use crate::process;
 use crate::profile::{LightbarConfig, LightbarMode, Profile, ProfileStore};
 use crate::report::{self, Ds4Report, Transport};
@@ -473,8 +473,8 @@ impl Engine {
         match cmd {
             EngineCommand::ApplySettings(s) => {
                 let next = s.sanitised();
-                let needs_reader =
-                    next.poll_rate_hz != self.settings.poll_rate_hz || next.device != self.settings.device;
+                let needs_reader = next.poll_rate_hz != self.settings.poll_rate_hz
+                    || next.device != self.settings.device;
                 let needs_backend = next.output_mode != self.settings.output_mode;
                 self.settings = next;
                 if needs_backend {

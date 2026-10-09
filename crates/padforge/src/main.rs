@@ -1,4 +1,4 @@
-﻿//! PadForge: give a PlayStation DualShock 4 a native voice on Windows.
+//! PadForge: give a PlayStation DualShock 4 a native voice on Windows.
 //!
 //! The DS4 speaks HID; almost every Windows game speaks XInput. PadForge reads
 //! the real HID report, reshapes every axis, remaps every button, and publishes
@@ -58,9 +58,13 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
-    eframe::run_native(padcore::APP_NAME, options, Box::new(move |cc| {
-        Ok(Box::new(App::new(cc, engine, state, inbox)) as Box<dyn eframe::App>)
-    }))
+    eframe::run_native(
+        padcore::APP_NAME,
+        options,
+        Box::new(
+            move |cc| Ok(Box::new(App::new(cc, engine, state, inbox)) as Box<dyn eframe::App>),
+        ),
+    )
 }
 
 /// Parsed command line.

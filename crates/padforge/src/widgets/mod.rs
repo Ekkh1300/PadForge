@@ -48,24 +48,20 @@ impl PadPreview {
         // gives it more room, but never more than the cap.
         let available = ui.available_size();
         let max_h = (available.y * 0.52).clamp(200.0, 380.0);
-        let size = Vec2::new(
-            available.x.min(max_h * 0.72).min(300.0),
-            max_h,
-        );
+        let size = Vec2::new(available.x.min(max_h * 0.72).min(300.0), max_h);
         let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
         let painter = ui.painter_at(rect);
 
         if self.dimmed {
             painter.rect_filled(rect, RADIUS_LG, BACKDROP);
             glow(&painter, rect.center(), size.x * 0.4, ACCENT_FAINT);
-            ui.painter()
-                .text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "waiting for a pad",
-                    FontId::proportional(14.0),
-                    TEXT_FAINT,
-                );
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "waiting for a pad",
+                FontId::proportional(14.0),
+                TEXT_FAINT,
+            );
             return response;
         }
 
@@ -91,7 +87,9 @@ impl PadPreview {
         painter.rect_stroke(
             body_rect,
             RADIUS_LG,
-            Stroke::new(1.0, BORDER), egui::StrokeKind::Middle);
+            Stroke::new(1.0, BORDER),
+            egui::StrokeKind::Middle,
+        );
 
         // --- lightbar --------------------------------------------------
         let bar_w = body_w * 0.44;
@@ -107,15 +105,16 @@ impl PadPreview {
 
         // --- sticks ----------------------------------------------------
         // Left stick sits above-left of centre, right stick below-right.
-        let l_stick = Pos2::new(
-            cx - body_w * 0.24,
-            body_rect.center().y - body_h * 0.20,
+        let l_stick = Pos2::new(cx - body_w * 0.24, body_rect.center().y - body_h * 0.20);
+        let r_stick = Pos2::new(cx + body_w * 0.24, body_rect.center().y + body_h * 0.20);
+        draw_stick(
+            &painter,
+            l_stick,
+            30.0 * scale,
+            (r.left_x, r.left_y),
+            ACCENT,
+            TEXT_MUTED,
         );
-        let r_stick = Pos2::new(
-            cx + body_w * 0.24,
-            body_rect.center().y + body_h * 0.20,
-        );
-        draw_stick(&painter, l_stick, 30.0 * scale, (r.left_x, r.left_y), ACCENT, TEXT_MUTED);
         draw_stick(
             &painter,
             r_stick,
@@ -126,10 +125,7 @@ impl PadPreview {
         );
 
         // --- d-pad -----------------------------------------------------
-        let dpad = Pos2::new(
-            cx + body_w * 0.26,
-            body_rect.center().y - body_h * 0.20,
-        );
+        let dpad = Pos2::new(cx + body_w * 0.26, body_rect.center().y - body_h * 0.20);
         draw_dpad(
             &painter,
             dpad,
@@ -150,9 +146,27 @@ impl PadPreview {
         let gap = fr * 1.42;
         let out = self.output_buttons;
         for (offset, glyph, mask, target, idle) in [
-            (Vec2::new(0.0, -gap), GLYPH_TRIANGLE, Buttons::TRIANGLE, XButtons::Y, TEXT),
-            (Vec2::new(gap, 0.0), GLYPH_CIRCLE, Buttons::CIRCLE, XButtons::B, TEXT),
-            (Vec2::new(0.0, gap), GLYPH_CROSS, Buttons::CROSS, XButtons::A, ACCENT),
+            (
+                Vec2::new(0.0, -gap),
+                GLYPH_TRIANGLE,
+                Buttons::TRIANGLE,
+                XButtons::Y,
+                TEXT,
+            ),
+            (
+                Vec2::new(gap, 0.0),
+                GLYPH_CIRCLE,
+                Buttons::CIRCLE,
+                XButtons::B,
+                TEXT,
+            ),
+            (
+                Vec2::new(0.0, gap),
+                GLYPH_CROSS,
+                Buttons::CROSS,
+                XButtons::A,
+                ACCENT,
+            ),
             (
                 Vec2::new(-gap, 0.0),
                 GLYPH_SQUARE,
@@ -237,10 +251,7 @@ fn draw_stick(
     idle: Color32,
 ) {
     painter.circle_filled(center, radius, SURFACE);
-    painter.circle_stroke(
-        center,
-        radius,
-        Stroke::new(1.0, BORDER));
+    painter.circle_stroke(center, radius, Stroke::new(1.0, BORDER));
 
     let magnitude = (x * x + y * y).sqrt().clamp(0.0, 1.0);
     let travel = radius * 0.48;
@@ -254,7 +265,15 @@ fn draw_stick(
 }
 
 /// A cross-shaped D-pad whose arms light up individually.
-fn draw_dpad(painter: &egui::Painter, center: Pos2, r: f32, up: bool, down: bool, left: bool, right: bool) {
+fn draw_dpad(
+    painter: &egui::Painter,
+    center: Pos2,
+    r: f32,
+    up: bool,
+    down: bool,
+    left: bool,
+    right: bool,
+) {
     let arm = r * 0.42;
     let len = r * 0.95;
     let shape: [Rect; 4] = [
@@ -303,18 +322,15 @@ fn draw_face_button(
     if pressed {
         glow(painter, center, r * 1.7, ACCENT);
     }
-    painter.circle_filled(
-        center,
-        r,
-        if pressed { ACCENT } else { SURFACE_HOVER },
-    );
+    painter.circle_filled(center, r, if pressed { ACCENT } else { SURFACE_HOVER });
     painter.circle_stroke(
         center,
         r,
         Stroke::new(
             if mapped && !pressed { 2.0 } else { 1.0 },
             if pressed || mapped { ACCENT } else { BORDER },
-        ));
+        ),
+    );
     painter.text(
         center,
         egui::Align2::CENTER_CENTER,
@@ -336,7 +352,12 @@ fn draw_pill(
 ) {
     let rect = Rect::from_center_size(center, Vec2::new(w, h));
     painter.rect_filled(rect, RADIUS_PILL, SURFACE);
-    painter.rect_stroke(rect,  RADIUS_PILL,  Stroke::new(1.0, BORDER), egui::StrokeKind::Middle);
+    painter.rect_stroke(
+        rect,
+        RADIUS_PILL,
+        Stroke::new(1.0, BORDER),
+        egui::StrokeKind::Middle,
+    );
 
     // Fill from the centre outwards.
     let fill = rect.shrink(2.0);
@@ -383,10 +404,7 @@ pub fn axis_bar(ui: &mut egui::Ui, label: &str, value: f32, accent: Color32) {
     // adjacent bars do not look joined.
     const LABEL_H: f32 = 16.0;
     let total = LABEL_H + height + 6.0;
-    let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), total),
-        Sense::hover(),
-    );
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), total), Sense::hover());
     let painter = ui.painter_at(rect);
 
     painter.text(
@@ -422,15 +440,9 @@ pub fn axis_bar(ui: &mut egui::Ui, label: &str, value: f32, accent: Color32) {
     if v.abs() > 0.005 {
         let w = bar.width() * v.abs() * 0.5;
         let fill = if v < 0.0 {
-            Rect::from_min_max(
-                Pos2::new(cx - w, bar.min.y),
-                Pos2::new(cx, bar.max.y),
-            )
+            Rect::from_min_max(Pos2::new(cx - w, bar.min.y), Pos2::new(cx, bar.max.y))
         } else {
-            Rect::from_min_max(
-                Pos2::new(cx, bar.min.y),
-                Pos2::new(cx + w, bar.max.y),
-            )
+            Rect::from_min_max(Pos2::new(cx, bar.min.y), Pos2::new(cx + w, bar.max.y))
         };
         painter.rect_filled(fill, RADIUS_PILL, accent);
     }
@@ -491,10 +503,7 @@ pub fn battery_pill(ui: &mut egui::Ui, level: u8, charging: bool) {
 /// A horizontal sparkline of recent values, for gyro and latency readouts.
 pub fn sparkline(ui: &mut egui::Ui, values: &[f32], range: f32, colour: Color32) {
     let height = 34.0;
-    let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), height),
-        Sense::hover(),
-    );
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, RADIUS_SM, BACKDROP);
     if values.len() < 2 {
@@ -505,7 +514,8 @@ pub fn sparkline(ui: &mut egui::Ui, values: &[f32], range: f32, colour: Color32)
     let mid = rect.center().y;
     painter.line_segment(
         [Pos2::new(rect.min.x, mid), Pos2::new(rect.max.x, mid)],
-        Stroke::new(1.0, BORDER));
+        Stroke::new(1.0, BORDER),
+    );
 
     let step = rect.width() / (values.len() - 1).max(1) as f32;
     let half = rect.height() * 0.42;
@@ -558,10 +568,7 @@ impl ColourPicker {
             let x0 = rect.min.x + rect.width() * (i as f32 / steps as f32);
             let x1 = rect.min.x + rect.width() * ((i + 1) as f32 / steps as f32);
             painter.rect_filled(
-                Rect::from_min_max(
-                    Pos2::new(x0, rect.min.y),
-                    Pos2::new(x1, rect.max.y),
-                ),
+                Rect::from_min_max(Pos2::new(x0, rect.min.y), Pos2::new(x1, rect.max.y)),
                 0.0,
                 Color32::from_rgb(c[0], c[1], c[2]),
             );
@@ -573,10 +580,7 @@ impl ColourPicker {
             }
         }
         let hx = rect.min.x + rect.width() * self.hsv[0];
-        painter.circle_stroke(
-            Pos2::new(hx, rect.center().y),
-            7.0,
-            Stroke::new(2.0, TEXT));
+        painter.circle_stroke(Pos2::new(hx, rect.center().y), 7.0, Stroke::new(2.0, TEXT));
 
         ui.add_space(SPACE_XS);
 
@@ -608,8 +612,7 @@ impl ColourPicker {
         if sq_resp.clicked() {
             if let Some(p) = sq_resp.interact_pointer_pos() {
                 self.hsv[1] = ((p.x - sq_rect.min.x) / sq_rect.width()).clamp(0.0, 1.0);
-                self.hsv[2] =
-                    (1.0 - (p.y - sq_rect.min.y) / sq_rect.height()).clamp(0.0, 1.0);
+                self.hsv[2] = (1.0 - (p.y - sq_rect.min.y) / sq_rect.height()).clamp(0.0, 1.0);
             }
         }
         let cursor = Pos2::new(
@@ -620,15 +623,14 @@ impl ColourPicker {
         sq_painter.rect_stroke(
             sq_rect,
             CornerRadius::same(4),
-            Stroke::new(1.0, BORDER), egui::StrokeKind::Middle);
+            Stroke::new(1.0, BORDER),
+            egui::StrokeKind::Middle,
+        );
 
         ui.add_space(SPACE_SM);
 
         // Swatch preview plus a hex readout.
-        let (swatch_rect, _) = ui.allocate_exact_size(
-            egui::vec2(28.0, 28.0),
-            Sense::hover(),
-        );
+        let (swatch_rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), Sense::hover());
         ui.painter().rect_filled(
             swatch_rect,
             RADIUS_SM,
@@ -637,12 +639,17 @@ impl ColourPicker {
         ui.painter().rect_stroke(
             swatch_rect,
             RADIUS_SM,
-            Stroke::new(1.0, BORDER), egui::StrokeKind::Middle);
+            Stroke::new(1.0, BORDER),
+            egui::StrokeKind::Middle,
+        );
         ui.add_space(SPACE_SM);
         ui.label(
-            egui::RichText::new(format!("#{:02X}{:02X}{:02X}", current[0], current[1], current[2]))
-                .color(TEXT_MUTED)
-                .monospace(),
+            egui::RichText::new(format!(
+                "#{:02X}{:02X}{:02X}",
+                current[0], current[1], current[2]
+            ))
+            .color(TEXT_MUTED)
+            .monospace(),
         );
     }
 }
@@ -666,7 +673,11 @@ pub fn rgb_to_hsv(rgb: [u8; 3]) -> (f32, f32, f32) {
         (r - g) / delta + 4.0
     } / 6.0;
 
-    let s = if max.abs() < f32::EPSILON { 0.0 } else { delta / max };
+    let s = if max.abs() < f32::EPSILON {
+        0.0
+    } else {
+        delta / max
+    };
     (h.rem_euclid(1.0), s, max)
 }
 

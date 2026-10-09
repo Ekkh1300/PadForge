@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 use crate::device::Calibration;
 use crate::filters::{AxisFilter, Curve, Smoothing};
 use crate::gyro::GyroConfig;
-use crate::pointer::PointerConfig;
 use crate::mapping::{Ds4Control, Mapping, X360Control};
 use crate::paths;
+use crate::pointer::PointerConfig;
 use crate::touchpad::TouchpadConfig;
 
 /// Lightbar behaviour.
@@ -513,8 +513,14 @@ mod tests {
         let p = Profile::new();
         assert_eq!(p.mapping_for(Ds4Control::Cross).target, X360Control::A);
         assert_eq!(p.mapping_for(Ds4Control::Circle).target, X360Control::B);
-        assert_eq!(p.mapping_for(Ds4Control::Options).target, X360Control::Start);
-        assert_eq!(p.mapping_for(Ds4Control::TouchpadClick).target, X360Control::Guide);
+        assert_eq!(
+            p.mapping_for(Ds4Control::Options).target,
+            X360Control::Start
+        );
+        assert_eq!(
+            p.mapping_for(Ds4Control::TouchpadClick).target,
+            X360Control::Guide
+        );
     }
 
     /// Regression guard: D-pad Right was silently left unbound, and the touchpad
@@ -545,8 +551,8 @@ mod tests {
         for control in Ds4Control::ALL {
             // Deliberately unbound: pseudo-controls, and stick directions, which
             // are an opt-in extra rather than part of the standard layout.
-            let expected_hole = control.is_axis_direction()
-                || matches!(control, D::DpadAny | D::TouchpadGesture);
+            let expected_hole =
+                control.is_axis_direction() || matches!(control, D::DpadAny | D::TouchpadGesture);
             let mapped = p.mapping_for(*control).target != X360Control::None;
             if expected_hole {
                 assert!(!mapped, "{control:?} should be unbound by default");

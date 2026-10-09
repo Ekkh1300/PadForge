@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, tests
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # windows-latest images ship a MinGW-w64 toolchain for the GNU target, but
+      # not always on PATH. Point the linker at it explicitly rather than
+      # relying on the image layout.
+      - name: Locate the GNU toolchain
+        shell: pwsh
+        run: |
+          $gcc = Get-Command gcc -ErrorAction SilentlyContinue
+          if (-not $gcc) {
+            $candidates = @(
+              "C:\mingw64\bin",
+              "C:\msys64\mingw64\bin",
+              "$env:RUNNER_TEMP\mingw64\bin"
+            )
+            $found = $candidates | Where-Object { Test-Path $_ }
+            if ($found) {
+              "$($found[0])" >> $env:GITHUB_PATH
+              "  Using GNU toolchain from $($found[0])" | Out-Host
+            } else {
+              # choco is present on the windows images.
+              "Installing mingw..." | Out-Host
+              choco install mingw --no-progress -y
+              "C:\ProgramData\mingw64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+              "C:\ProgramData\mingw64\mingw64\bin" >> $env:GITHUB_PATH
+            }
+          }
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu
+
+      - name: tests
+        run: cargo test --workspace --target x86_64-pc-windows-gnu
+
+      # The hot path's zero-allocation assertion and its correctness tests are
+      # the point of the suite, so run them here rather than trusting a bare
+      # build to have covered them.
+      - name: hot path does not allocate
+        run: cargo test -p padcore --release --target x86_64-pc-windows-gnu --test perf -- hot_path_does_not_allocate
+
+      - name: rustdoc
+        run: cargo doc --workspace --no-deps --target x86_64-pc-windows-gnu
+
+  performance:
+    name: hot path throughput
+    runs-on: windows-latest
+
+    # Numbers are machine-dependent, so this reports rather than gates.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Locate the GNU toolchain
+        shell: pwsh
+        run: |
+          $candidates = @("C:\mingw64\bin", "C:\msys64\mingw64\bin")
+          $found = $candidates | Where-Object { Test-Path $_ }
+          if ($found) { "$($found[0])" >> $env:GITHUB_PATH }
+
+      - name: measure
+        run: cargo test -p padcore --release --target x86_64-pc-windows-gnu --test perf -- --ignored --nocapture --test-threads=1
