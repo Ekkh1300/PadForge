@@ -1,8 +1,12 @@
-# PadForge
+<p align="center">
+  <img src="icon.png" alt="PadForge" width="96">
+</p>
+
+<h1 align="center">PadForge</h1>
 
 **Give your DualShock 4 a native voice on Windows.**
 
-> [فارسی](README.md) — این راهنما به فارسی است.
+> [فارسی](README.md)
 
 Windows games speak XInput; a DualShock 4 speaks HID. That mismatch is the whole
 reason this app exists: PadForge reads the pad's real HID report, reshapes every

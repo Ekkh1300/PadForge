@@ -1,6 +1,12 @@
-# PadForge
+<p align="center">
+  <img src="icon.png" alt="PadForge" width="96">
+</p>
+
+<h1 align="center">PadForge</h1>
 
 **به دسته‌ی DualShock 4 روی ویندوز، صدای بومی بدهید.**
+
+> [English](README.en.md)
 
 بازی‌های ویندوز با XInput حرف می‌زنند. دسته‌ی DualShock 4 با HID. همین ناهمخوانی
 دلیل وجود این برنامه است: PadForge گزارش واقعی HID دسته را می‌خواند، هر محور را
@@ -66,6 +72,12 @@ PadForge-Setup.exe --help            راهنما
 ```
 
 گزینه‌ها: `--no-desktop-shortcut`، `--autostart`، `--no-launch`.
+
+![پنجره نصب](docs/installer.png)
+
+پنجره‌ی نصب با GDI بومی ویندوز رسم می‌شود، نه با یک toolkit گرافیکی: هم بدون
+وابستگی اضافه است و هم روی هر ماشینی کار می‌کند، حتی اگر درایور گرافیک مشکل
+داشته باشد.
 
 ## ساختن از سورس
 
