@@ -14,6 +14,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::formula::{Formula, Inputs};
+
 /// Rescale `value` so it reaches a true 0..=1 across the full active range.
 fn unit(value: f32, dz: f32) -> f32 {
     if value <= 0.0 {
@@ -170,10 +172,43 @@ impl AxisFilter {
     }
 
     /// Feed one raw sample and get the shaped output.
-    ///
-    /// The magnitude is shaped by the curve (curves are direction-agnostic) and
-    /// only then signed, which is what keeps left/right symmetric.
     pub fn apply(&mut self, raw: f32) -> f32 {
+        self.apply_with_formula(raw, None, &Inputs::default())
+    }
+
+    /// Feed one raw sample, applying an optional formula to the shaped value.
+    ///
+    /// The formula runs after the dead zone and the curve and before quantisation,
+    /// which is the ordering that makes one useful. `a1 * 2` is a statement about
+    /// the shaped value, so running it first would have it fight the curve. And
+    /// `max(a1, 0)` has to see the value the curve produced, not the raw one, or
+    /// it would suppress a direction the user had deliberately given more range.
+    ///
+    /// The shaped value is also passed to the formula as `a1`, so a formula refers
+    /// to the value it is transforming rather than having to know which of the
+    /// chain stages came before it.
+    pub fn apply_with_formula(
+        &mut self,
+        raw: f32,
+        formula: Option<&Formula>,
+        siblings: &Inputs,
+    ) -> f32 {
+        let shaped = self.shape(raw);
+        let Some(formula) = formula else {
+            return shaped;
+        };
+        // The axis being shaped reads a1, so a formula can scale it by a constant
+        // without having to be told which axis it is attached to.
+        let mut inputs = *siblings;
+        inputs.axes[0] = shaped;
+        // A formula that fails at evaluation time falls back to the shaped value.
+        // It was validated at load, so this is unreachable in practice, and
+        // silently zeroing the axis would be a far worse outcome than ignoring it.
+        formula.eval(&inputs).unwrap_or(shaped)
+    }
+
+    /// The curve, dead zone and smoothing, without any formula.
+    fn shape(&mut self, raw: f32) -> f32 {
         let mut v = raw.clamp(-1.0, 1.0);
         if self.inverted {
             v = -v;

@@ -10,9 +10,11 @@ use std::f32::consts::TAU;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::device::Calibration;
 use crate::filters::{AxisFilter, Curve, Smoothing};
+use crate::formula::Formula;
 use crate::gyro::GyroConfig;
 use crate::mapping::{Ds4Control, Mapping, X360Control};
 use crate::paths;
@@ -150,7 +152,11 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
 }
 
 /// Per-axis settings, serialisable form of [`AxisFilter`].
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+///
+/// No longer `Copy`, because it holds the formula's source text. The clone only
+/// happens where settings are read once per profile rather than per frame, so the
+/// cost is not on the hot path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AxisSettings {
     pub deadzone: f32,
     pub curve: Curve,
@@ -158,6 +164,12 @@ pub struct AxisSettings {
     pub smoothing: Smoothing,
     pub sensitivity: f32,
     pub inverted: bool,
+    /// An expression applied after the curve, replacing `sensitivity`.
+    ///
+    /// Kept as text so a profile stays readable and hand-editable: `a1 * 2` in the
+    /// JSON tells the reader what it does, where a token list would not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formula: Option<String>,
 }
 
 impl Default for AxisSettings {
@@ -175,6 +187,9 @@ impl From<&AxisFilter> for AxisSettings {
             smoothing: f.smoothing,
             sensitivity: f.sensitivity,
             inverted: f.inverted,
+            // A plain filter has no formula; the text only exists in a profile a
+            // person edited.
+            formula: None,
         }
     }
 }
@@ -189,6 +204,29 @@ impl AxisSettings {
         f.sensitivity = self.sensitivity.clamp(0.0, 5.0);
         f.inverted = self.inverted;
         f
+    }
+
+    /// The parsed formula, if this axis has a usable one.
+    ///
+    /// Parsed on demand and nowhere else: the text lives in the profile JSON so
+    /// it stays readable and editable, which means something has to turn it into
+    /// a form at some point. Doing it here means a bad formula is reported against
+    /// the axis the user typed it into.
+    ///
+    /// The sensitivity field is deliberately left in place when a formula is set.
+    /// Applying both would multiply them together, which is almost never what
+    /// someone wants and makes the effective gain impossible to reason about, so
+    /// the formula replaces the multiplier rather than stacking on it. That is the
+    /// same rule x360ce documents.
+    pub fn formula(&self) -> Option<Formula> {
+        let source = self.formula.as_ref()?;
+        match Formula::parse(source) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                warn!("axis formula {source:?} is not usable: {e}");
+                None
+            }
+        }
     }
 }
 
@@ -323,8 +361,14 @@ impl Profile {
         }
     }
 
+    /// The mapping for a control, or a neutral one if it has none.
+    ///
+    /// Clones rather than copying: `Mapping` holds the formula text, so it is no
+    /// longer a plain value. The allocation only happens when a row actually has a
+    /// formula, and the alternative is putting the formula behind a reference,
+    /// which would complicate the type for no gain at this size.
     pub fn mapping_for(&self, control: Ds4Control) -> Mapping {
-        self.mapping.get(&control).copied().unwrap_or_default()
+        self.mapping.get(&control).cloned().unwrap_or_default()
     }
 
     pub fn set_mapping(&mut self, control: Ds4Control, mapping: Mapping) {

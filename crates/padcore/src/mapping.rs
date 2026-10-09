@@ -310,7 +310,7 @@ impl X360Control {
 }
 
 /// How one DS4 control is wired up.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mapping {
     /// Where the value goes.
     pub target: X360Control,
@@ -320,6 +320,20 @@ pub struct Mapping {
     /// Multiplier, so a control can be made more or less sensitive.
     #[serde(default = "one")]
     pub sensitivity: f32,
+    /// An expression in place of the curve and sensitivity.
+    ///
+    /// The feature this is for is a formula instead of a single multiplier, so a
+    /// row can say `trigger * 2` to reach full travel at half a press, or
+    /// `max(a1, 0)` to use only one half of a pedal. x360ce has this and it
+    /// earns its place.
+    ///
+    /// Stored as text rather than as a parsed form on purpose: a profile is
+    /// written to JSON that people read and edit, and a token list in there would
+    /// be unreadable and would break every time the language grew a feature.
+    /// Parsing happens on load and the error is reported there, which is also
+    /// where a user is told what is wrong.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formula: Option<String>,
     /// Require this other X360 control to be held for the mapping to fire.
     #[serde(default)]
     pub mod_target: Option<X360Control>,
@@ -339,6 +353,7 @@ impl Default for Mapping {
             target: X360Control::None,
             curve: Curve::Linear,
             sensitivity: 1.0,
+            formula: None,
             mod_target: None,
             mod_ds4: None,
         }

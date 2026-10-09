@@ -458,42 +458,50 @@ pub fn output_report(
     blue: u8,
     rumble: Option<(u8, u8)>,
 ) -> Vec<u8> {
-    // USB reports are 64 bytes, Bluetooth 78; the trailing bytes are unused.
     let len = match transport {
         Transport::Usb => 64,
         Transport::Bluetooth => 78,
     };
     let mut buf = vec![0u8; len];
-    buf[0] = 0x05; // output report id
-                   // RGB brightness runs from offset 1 on both transports.
-    buf[1] = red;
-    buf[2] = green;
-    buf[3] = blue;
-    // Bluetooth carries the same bytes at a different offset for the second
-    // (unused) LED bank; keep it in sync so firmware never reads stale data.
+
+    // The two transports do not share a layout at all, and treating them as if
+    // they did is why rumble appeared to work while doing nothing.
+    //
+    // Over USB it is report 0x05 and the values sit at the front. Over Bluetooth
+    // it is report 0x11 with a poll rate, a feature mask and a fixed byte
+    // before any of them, and every value is eight bytes further along than the
+    // USB equivalent. Sending 0x05 to a Bluetooth pad is rejected outright by
+    // the driver, which is why nothing was ever felt.
+    //
+    // Layouts confirmed against DS4Windows, PrepareOutputReportInner.
+    let (report_id, poll_and_rate, features, reserved, fast, slow, r, g, b) = match transport {
+        Transport::Usb => (0x05u8, 0u8, 0u8, 0u8, 4usize, 5, 1usize, 2, 3),
+        Transport::Bluetooth => (0x11, 0xC0, 0x07, 0x04, 6, 7, 8, 9, 10),
+    };
+
+    buf[0] = report_id;
+    buf[r] = red;
+    buf[g] = green;
+    buf[b] = blue;
+
     if transport == Transport::Bluetooth {
-        buf[10] = red;
-        buf[11] = green;
-        buf[12] = blue;
+        // The poll rate is a rate code rather than a frequency: 0xC0 is 125 Hz,
+        // the pad's own mode. Getting this wrong makes the pad ignore the rest
+        // of the report, so it is set explicitly rather than left at zero.
+        buf[1] = poll_and_rate;
+        // Bit 0 rumble, bit 1 lightbar, bit 2 flash. Without this the pad
+        // receives a valid report and does nothing with it, which is precisely
+        // the failure this whole path had.
+        buf[3] = features;
+        buf[4] = reserved;
     }
-    if let Some((large, small)) = rumble {
-        // Two separate bytes, one per motor, each a full 0..=255. They are not
-        // nibbles sharing a byte, and they are not at the end of the report.
-        //
-        // Both of those were wrong here, and both failed quietly: masking to four
-        // bits capped every rumble at 6% strength, so a full-throttle rumble felt
-        // like a tap, and writing to the last byte of the buffer put the value
-        // where the pad does not read it, so it vibrated not at all. Neither
-        // produced an error; the first just felt weak and the second felt absent.
-        //
-        // Offsets confirmed against DS4Windows, which writes these at [6] and [7]
-        // over Bluetooth and [4] and [5] over USB.
-        let (fast, slow) = match transport {
-            Transport::Usb => (4usize, 5usize),
-            Transport::Bluetooth => (6usize, 7usize),
-        };
-        buf[fast] = large;
-        buf[slow] = small;
+
+    if let Some((heavy, fast_motor)) = rumble {
+        // Full bytes, one per motor. They are not nibbles sharing a byte, and a
+        // 0x0F mask capped every rumble at about 6% strength, so a full one felt
+        // like a tap rather than a rumble.
+        buf[fast] = fast_motor;
+        buf[slow] = heavy;
     }
     buf
 }
@@ -515,50 +523,88 @@ mod tests {
         b
     }
 
-    /// The two motors are full bytes at fixed offsets, one per transport.
+    /// The two transports use entirely different output layouts, and the
+    /// Bluetooth one is the reason rumble appeared to work while doing nothing.
     ///
-    /// Both facts were wrong at once. The value was masked to four bits, which
-    /// capped every rumble at 6% strength, and it was written to the last byte of
-    /// the buffer, which is not where the pad reads it. Neither raised an error:
-    /// the first just felt weak, the second did nothing at all.
+    /// Sending report 0x05 to a Bluetooth pad is rejected by the driver with
+    /// ERROR_INVALID_PARAMETER, so nothing ever reached the hardware. The old code
+    /// also put the colour bytes at the USB offsets and the motors at the end of
+    /// the buffer, neither of which the pad reads in Bluetooth mode.
     #[test]
-    fn rumble_uses_full_bytes_at_the_right_offsets() {
+    fn bluetooth_output_uses_its_own_layout() {
+        let buf = output_report(Transport::Bluetooth, 11, 22, 33, Some((44, 55)));
+        assert_eq!(buf[0], 0x11, "Bluetooth output is report 0x11, not 0x05");
+        assert_eq!(buf[3], 0x07, "rumble and lightbar must be enabled");
+        assert_eq!((buf[6], buf[7]), (55, 44), "motors at 6 and 7");
+        assert_eq!(
+            (buf[8], buf[9], buf[10]),
+            (11, 22, 33),
+            "colour at 8, 9, 10"
+        );
+    }
+
+    #[test]
+    fn usb_output_keeps_its_own_layout() {
+        let buf = output_report(Transport::Usb, 11, 22, 33, Some((44, 55)));
+        assert_eq!(buf[0], 0x05, "USB output is report 0x05");
+        assert_eq!((buf[1], buf[2], buf[3]), (11, 22, 33), "colour at 1, 2, 3");
+        assert_eq!((buf[4], buf[5]), (55, 44), "motors at 4 and 5");
+    }
+
+    /// Full strength has to survive, because masking to a nibble is what made a
+    /// maximum rumble feel like a tap.
+    #[test]
+    fn full_rumble_is_not_clipped() {
         for (transport, fast, slow) in [
             (Transport::Usb, 4usize, 5usize),
             (Transport::Bluetooth, 6, 7),
         ] {
-            let buf = output_report(transport, 0, 0, 0, Some((200, 100)));
+            let buf = output_report(transport, 0, 0, 0, Some((255, 255)));
             assert_eq!(
                 buf[fast],
-                200,
-                "{}: the fast motor byte must carry the full value, not a masked one",
+                255,
+                "{}: fast motor must reach 255",
                 transport.label()
             );
             assert_eq!(
                 buf[slow],
-                100,
-                "{}: the slow motor byte must carry the full value",
+                255,
+                "{}: slow motor must reach 255",
                 transport.label()
             );
         }
-    }
-
-    /// Full strength has to survive, because masking to a nibble is precisely
-    /// what made a maximum rumble feel like a tap.
-    #[test]
-    fn full_rumble_is_not_clipped() {
-        let buf = output_report(Transport::Bluetooth, 0, 0, 0, Some((255, 255)));
-        assert_eq!(buf[6], 255, "a full rumble must reach the pad as 255");
-        assert_eq!(buf[7], 255, "both motors, or the light one was masked too");
     }
 
     /// The rumble bytes must not collide with the colour bytes, or setting one
     /// silently disturbs the other.
     #[test]
     fn rumble_and_colour_do_not_overlap() {
-        let buf = output_report(Transport::Bluetooth, 11, 22, 33, Some((44, 55)));
-        assert_eq!((buf[1], buf[2], buf[3]), (11, 22, 33), "colour bytes");
-        assert_eq!((buf[6], buf[7]), (44, 55), "rumble bytes");
+        for (transport, fast, slow, r, g, b) in [
+            (Transport::Usb, 4usize, 5usize, 1usize, 2usize, 3usize),
+            (Transport::Bluetooth, 6, 7, 8, 9, 10),
+        ] {
+            let buf = output_report(transport, 11, 22, 33, Some((44, 55)));
+            assert_eq!(
+                (buf[r], buf[g], buf[b]),
+                (11, 22, 33),
+                "{}: colour",
+                transport.label()
+            );
+            assert_eq!(
+                (buf[fast], buf[slow]),
+                (55, 44),
+                "{}: rumble",
+                transport.label()
+            );
+        }
+    }
+
+    /// Both reports have to be the length their transport declares, because
+    /// hidapi pads anything shorter and rejects the result.
+    #[test]
+    fn output_lengths_match_the_transport() {
+        assert_eq!(output_report(Transport::Usb, 0, 0, 0, None).len(), 64);
+        assert_eq!(output_report(Transport::Bluetooth, 0, 0, 0, None).len(), 78);
     }
 
     #[test]

@@ -109,9 +109,12 @@ fn mapping_row(
             });
         // Push the change straight into the profile and the engine.
         if selected != mapping.target {
+            // Cloned because the row is inspected again below: a mapping carries
+            // the formula text and is no longer a plain value, so handing it to
+            // `set_mapping` moves it.
             ctx.state
                 .editing_profile_mut()
-                .set_mapping(control, mapping_with_target(mapping, selected));
+                .set_mapping(control, mapping_with_target(mapping.clone(), selected));
             let store = ctx.state.store.clone();
             ctx.engine
                 .send(EngineCommand::ApplyProfiles(Box::new(store)));
@@ -149,7 +152,7 @@ fn mapping_row(
                     }
                 });
             if mod_ds4 != mapping.mod_ds4 {
-                let mut next = mapping;
+                let mut next = mapping.clone();
                 next.mod_ds4 = mod_ds4;
                 ctx.state.editing_profile_mut().set_mapping(control, next);
                 let store = ctx.state.store.clone();
@@ -157,7 +160,7 @@ fn mapping_row(
                     .send(EngineCommand::ApplyProfiles(Box::new(store)));
             }
             if secondary_button(ui, "clear").clicked() {
-                let mut next = mapping;
+                let mut next = mapping.clone();
                 next.mod_ds4 = None;
                 next.mod_target = None;
                 ctx.state.editing_profile_mut().set_mapping(control, next);

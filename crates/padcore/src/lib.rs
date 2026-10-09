@@ -8,6 +8,7 @@
 pub mod device;
 pub mod engine;
 pub mod filters;
+pub mod formula;
 pub mod gyro;
 pub mod hotkey;
 pub mod mapping;

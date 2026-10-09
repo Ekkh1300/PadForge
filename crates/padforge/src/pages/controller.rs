@@ -50,14 +50,18 @@ impl Axis {
         }
     }
 
+    /// Cloned rather than copied: `AxisSettings` holds the formula's source text, so
+    /// it stopped being a plain value when formulas were added. The cost is one
+    /// small string per axis per repaint of this page, which is not a path worth
+    /// optimising before it is measured.
     fn read(self, p: &padcore::profile::Profile) -> AxisSettings {
         match self {
-            Axis::LeftX => p.left_x,
-            Axis::LeftY => p.left_y,
-            Axis::RightX => p.right_x,
-            Axis::RightY => p.right_y,
-            Axis::LeftTrigger => p.left_trigger,
-            Axis::RightTrigger => p.right_trigger,
+            Axis::LeftX => p.left_x.clone(),
+            Axis::LeftY => p.left_y.clone(),
+            Axis::RightX => p.right_x.clone(),
+            Axis::RightY => p.right_y.clone(),
+            Axis::LeftTrigger => p.left_trigger.clone(),
+            Axis::RightTrigger => p.right_trigger.clone(),
         }
     }
 

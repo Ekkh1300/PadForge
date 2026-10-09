@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 
 use crate::device::{self, Calibration, DeviceReader, DeviceSnapshot};
 use crate::filters::{AxisFilter, Curve};
+use crate::formula::{Formula, Inputs};
 use crate::gyro::{GyroConfig, GyroOutputMode, GyroProcessor, GyroSmoothing};
 use crate::hotkey::{HotkeyAction, HotkeyBinding, HotkeyManager};
 use crate::mapping::{Ds4Control, X360Control};
@@ -281,6 +282,16 @@ struct Engine {
     hotkeys: Option<HotkeyManager>,
     hotkey_bindings: Vec<HotkeyBinding>,
 
+    /// Parsed axis formulas, in the order the six shaped axes are processed.
+    ///
+    /// A fixed array rather than a map keyed by control: the set of axes is
+    /// closed, so indexing costs nothing where a hash lookup would show up in the
+    /// per-frame profile the performance suite measures. Filled in
+    /// `apply_profile`, which is the point a profile change arrives at.
+    formulas: [Option<Formula>; 6],
+    /// When the engine started, for the `t` and `now` formula sources.
+    started: Instant,
+
     last_frame: Instant,
     last_publish: Instant,
     last_foreground_check: Instant,
@@ -331,6 +342,8 @@ impl Engine {
             mouse_middle_down: false,
             hotkeys: None,
             hotkey_bindings: Vec::new(),
+            formulas: std::array::from_fn(|_| None),
+            started: now,
             last_frame: now,
             last_publish: now,
             last_foreground_check: now,
@@ -430,6 +443,19 @@ impl Engine {
         self.right_y = profile.right_y.to_filter();
         self.left_trigger = profile.left_trigger.to_filter();
         self.right_trigger = profile.right_trigger.to_filter();
+
+        // Formulas are parsed here rather than per frame. The text only changes
+        // when a profile is edited, and this is the point where that arrives, so
+        // parsing costs nothing on the hot path and a bad formula is reported
+        // against the axis it was typed into rather than silently ignored.
+        self.formulas = [
+            profile.left_x.formula(),
+            profile.left_y.formula(),
+            profile.right_x.formula(),
+            profile.right_y.formula(),
+            profile.left_trigger.formula(),
+            profile.right_trigger.formula(),
+        ];
         self.gyro.set_config(profile.gyro);
         self.touchpad.set_config(profile.touchpad);
         self.gyro_pointer.set_config(profile.pointer);
@@ -625,15 +651,59 @@ impl Engine {
         }
     }
 
+    /// Apply the formula attached to one of the six shaped axes, if it has one.
+    ///
+    /// `slot` indexes [`Self::formulas`], which is filled in `apply_profile` when
+    /// a profile is activated. Parsing happens there rather than here so the hot
+    /// path is a token walk and nothing else.
+    ///
+    /// The axis being shaped is offered to its own formula as `a1`, so a formula can
+    /// say "scale me" without knowing which axis it is attached to, and the other
+    /// three are visible as `a2` to `a4`.
+    fn with_formula(&self, slot: usize, value: f32, axes: [f32; 4], now_ms: f64) -> f32 {
+        let Some(formula) = self.formulas.get(slot).and_then(|f| f.as_ref()) else {
+            return value;
+        };
+        let mut inputs = Inputs {
+            axes,
+            buttons: [0.0; 4],
+            sliders: [0.0; 4],
+            now_ms,
+        };
+        inputs.axes[0] = value;
+        // A formula was validated when the profile was activated, so reaching here
+        // with an error would mean something bypassed that. Falling back to the
+        // shaped value keeps the axis alive rather than zeroing it, which would be
+        // far more disruptive than ignoring a formula that should not exist.
+        formula.eval(&inputs).unwrap_or(value)
+    }
+
     /// Turn one DS4 report into an `XINPUT_GAMEPAD` state.
     fn translate(&mut self, report: &Ds4Report, profile: &Profile, dt: f32) -> GamepadState {
         let mut state = GamepadState::neutral();
+        // The origin for the time a formula can read. Taken once per frame so every
+        // axis in this report sees the same value.
+        // Elapsed time for formulas that read it. Taken once per frame so every
+        // axis in this report sees the same value rather than six slightly
+        // different ones.
+        let now_ms = self.started.elapsed().as_secs_f64() * 1000.0;
 
         // Analogue axes through their filter chains.
         let lx = self.left_x.apply(report.left_x);
         let ly = self.left_y.apply(report.left_y);
         let rx = self.right_x.apply(report.right_x);
         let ry = self.right_y.apply(report.right_y);
+
+        // Formulas run on the shaped values, and each axis sees all four so that
+        // something like `a1 * a2` is possible. The value being shaped is offered
+        // to its own formula as `a1`, which is what lets a formula say "scale me"
+        // without knowing which axis it is attached to.
+        let shaped = [lx, ly, rx, ry];
+        let lx = self.with_formula(0, shaped[0], shaped, now_ms);
+        let ly = self.with_formula(1, shaped[1], shaped, now_ms);
+        let rx = self.with_formula(2, shaped[2], shaped, now_ms);
+        let ry = self.with_formula(3, shaped[3], shaped, now_ms);
+
         state.thumb_lx = GamepadState::quantise(lx);
         state.thumb_ly = GamepadState::quantise(ly);
         state.thumb_rx = GamepadState::quantise(rx);
@@ -642,6 +712,9 @@ impl Engine {
         // Triggers carry both an analog value and a digital press threshold.
         let l2 = self.left_trigger.apply(report.l2);
         let r2 = self.right_trigger.apply(report.r2);
+        let triggers = [l2, r2, 0.0, 0.0];
+        let l2 = self.with_formula(4, l2, triggers, now_ms);
+        let r2 = self.with_formula(5, r2, triggers, now_ms);
         state.left_trigger = GamepadState::quantise_trigger(l2);
         state.right_trigger = GamepadState::quantise_trigger(r2);
 
