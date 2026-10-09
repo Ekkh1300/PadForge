@@ -469,7 +469,10 @@ fn uninstall_at(dir: &Path) -> Result<(), String> {
 
     let self_exe = std::env::current_exe().unwrap_or_default();
     if self_exe.starts_with(dir) {
+        // The deferred script cannot start until this process exits, so the
+        // window is left in place and the user is told the removal is pending.
         defer_removal(dir);
+        println!("  The folder is removed a moment after this window closes.");
     } else {
         std::fs::remove_dir_all(dir)
             .map_err(|e| format!("could not remove {}: {e}", dir.display()))?;
@@ -487,21 +490,42 @@ fn uninstall_at(dir: &Path) -> Result<(), String> {
 /// takes the rest of the command line verbatim, so a folder name containing
 /// `&`, `^`, or `%` would be parsed as shell syntax instead of a filename.
 ///
-/// A batch file cannot delete itself, and a chain of them does not help either:
-/// cmd reports "The batch file cannot be found" as soon as the file it is about
-/// to read has been removed. Two files plus a detached launch is what works —
-/// the starter hands off and exits, and the worker, which is no longer being read
-/// by anyone, removes the folder along with both scripts.
+/// A batch file cannot delete itself: cmd reports "The batch file cannot be
+/// found" the moment the file it is about to read is gone, so renaming in place
+/// does not help either, since cmd resolves each line against the original name.
+///
+/// The order below is the whole trick, and getting it wrong is silent rather
+/// than loud:
+///
+///   1. wait, so this process has fully exited and released its handle on
+///      uninstall.exe;
+///   2. remove the install folder, which is the actual goal;
+///   3. schedule the script's own deletion in a separate, detached cmd;
+///   4. rename this script out of the way, so nothing still holds it open;
+///   5. exit, releasing the handle.
+///
+/// Step 3 has to come before step 4. Renaming first and deleting after appeared to
+/// work in a probe and then failed in the real installer, because the detached
+/// shell woke up while cmd still held the original file open and `del` quietly did
+/// nothing. Scheduling the delete first inverts the race: by the time the new
+/// shell runs, the rename is long done and there is nothing left to lock.
+///
+/// The wait is generous on purpose. `ping -n 3` is roughly two seconds, which is
+/// usually enough, but a slow machine or a loaded antivirus can hold the executable
+/// open longer, and an rmdir that fails leaves the user looking at a folder that
+/// was supposed to disappear. A longer wait costs nothing the user notices.
 fn defer_removal(dir: &Path) {
     let script = std::env::temp_dir().join("padforge-remove.cmd");
 
-    // The `^` prefixes escape the redirection and the `&` so this line is passed
-    // through to the new shell instead of being acted on by the current one.
-    // `%~1` and `%~f0` are expanded by whichever shell runs each half.
+    // The `^` prefixes escape the redirection and the `&` so the last command is
+    // passed to the new shell instead of being acted on by the current one.
+    // `%~1` is the folder and `%~f0` this script.
     let contents = "@echo off\r\n\
-         ping 127.0.0.1 -n 3 > nul\r\n\
+         ping 127.0.0.1 -n 6 > nul\r\n\
          rmdir /S /Q \"%~1\"\r\n\
-         start /MIN cmd /C ping 127.0.0.1 -n 2 ^> nul ^& del /F /Q \"%~f0\"\r\n";
+         start /MIN cmd /C ping 127.0.0.1 -n 5 ^> nul ^& del /F /Q \"%~f0.done\"\r\n\
+         move /Y \"%~f0\" \"%~f0.done\" >nul 2>&1\r\n\
+         exit /b 0\r\n";
 
     if std::fs::write(&script, contents).is_err() {
         // Without the script the folder is simply left behind, which is a

@@ -1,0 +1,40 @@
+/* Windows resources for the installer.
+ *
+ * Same icon as the application, so the setup file and the program it installs
+ * look like one thing in Explorer, the Start Menu and the release page.
+ *
+ * The VERSIONINFO block is the one that matters most here. Without it Windows
+ * reports the setup file as having no version at all, and SmartScreen treats an
+ * unversioned executable more harshly than a versioned one.
+ */
+
+#include <winver.h>
+
+1 ICON "padforge.ico"
+
+1 VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEOS          VOS__WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        /* 0409 = en-US, 04B0 = Unicode. */
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "PadForge contributors\0"
+            VALUE "FileDescription",  "PadForge Setup - installs PadForge\0"
+            VALUE "FileVersion",      "1.0.0\0"
+            VALUE "InternalName",     "PadForge-Setup\0"
+            VALUE "LegalCopyright",   "MIT licensed. See LICENSE.\0"
+            VALUE "OriginalFilename", "PadForge-Setup.exe\0"
+            VALUE "ProductName",      "PadForge\0"
+            VALUE "ProductVersion",   "1.0.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

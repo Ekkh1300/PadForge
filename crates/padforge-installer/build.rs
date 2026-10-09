@@ -1,4 +1,5 @@
-//! Embeds the built application into the installer binary.
+//! Embeds the built application into the installer binary, and gives the
+//! installer itself an icon and a version resource.
 //!
 //! The installer has to be a single self-contained `.exe`, so the payload is
 //! baked in at compile time rather than shipped alongside. That introduces an
@@ -8,8 +9,14 @@
 //! one plus a loud warning. An installer that refuses to run and says why is far
 //! more useful during development than an unrelated build failure in a crate the
 //! caller did not ask to build, and `cargo test --workspace` still works.
+//!
+//! The resources come from `tools/padforge-installer.rc`, compiled by `windres`
+//! into an object that the linker is told to include. Without them Explorer shows a
+//! generic glyph for the setup file and Properties reports no version, which is
+//! the first thing anyone notices about a downloaded installer.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
@@ -27,6 +34,8 @@ fn main() {
         .expect("could not locate the target directory from OUT_DIR");
 
     println!("cargo:rerun-if-changed=build.rs");
+
+    embed_resources(&workspace_root.join("tools"), &out_dir);
 
     // Prefer release over debug, and the newest build within each.
     let mut candidates: Vec<PathBuf> = Vec::new();
@@ -69,6 +78,52 @@ fn main() {
             );
             std::fs::write(out_dir.join(name), b"").expect("could not stage docs");
         }
+    }
+}
+
+/// Compile `tools/padforge-installer.rc` with windres and link the result in.
+///
+/// A missing icon is not worth failing the build over, since it affects
+/// appearance only and the application itself is unaffected. Every failure here
+/// is a warning rather than an error.
+fn embed_resources(tools_dir: &Path, out_dir: &Path) {
+    let rc = tools_dir.join("padforge-installer.rc");
+    if !rc.is_file() {
+        println!(
+            "cargo:warning={} not found; the installer will have no icon",
+            rc.display()
+        );
+        return;
+    }
+
+    // windres resolves ICON paths relative to the working directory, so it is run
+    // from tools/ with bare filenames.
+    println!("cargo:rerun-if-changed={}", rc.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        tools_dir.join("padforge.ico").display()
+    );
+
+    let object = out_dir.join("padforge_installer_resources.o");
+    let status = Command::new("windres")
+        .arg("-i")
+        .arg("padforge-installer.rc")
+        .arg("-O")
+        .arg("coff")
+        .arg("-o")
+        .arg(&object)
+        .current_dir(tools_dir)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            // The documented way to get a non-Rust object into the link.
+            println!("cargo:rustc-link-arg={}", object.display());
+        }
+        Ok(s) => println!("cargo:warning=windres failed with {s}; the installer will have no icon"),
+        Err(e) => println!(
+            "cargo:warning=windres could not be run ({e}); the installer will have no icon"
+        ),
     }
 }
 
