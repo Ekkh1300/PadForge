@@ -5,23 +5,21 @@ title bar almost nothing survives, so the silhouette has to do the work. The
 body is a rounded rectangle, the touchpad a lighter inset, and the sticks and
 buttons just enough to read as a controller rather than a plain tile.
 
-The .ico is assembled here rather than left to Pillow, because Pillow's ICO
-writer does not reliably emit every requested size into the directory: it can
-produce a file whose offsets point far past its own end. Writing the container
-by hand makes the eight frames and their offsets verifiable.
+Standard library only. This runs in CI to prove the committed .ico matches, and
+requiring Pillow there would mean either installing it on every runner or
+trusting a resource the build depends on without being able to check it. A
+64x64 supersampled canvas, a rounding routine and a hand-built ICO directory is
+not much code for that independence.
 
 Run:  python make_icon.py
 """
 
-import math
 import os
 import struct
 import zlib
 
-from PIL import Image, ImageDraw
-
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "assets", "padforge.ico")
+OUT = os.path.join(HERE, "padforge.ico")
 
 # Windows asks for these; it picks the closest match per surface rather than
 # scaling one bitmap.
@@ -38,203 +36,254 @@ STICK_RING = (108, 122, 148)
 LIGHTBAR = (86, 182, 255)
 D_PAD = (74, 84, 104)
 
+SS = 4  # supersample factor
 
-def draw_pad(size: int) -> Image.Image:
-    """Draw the pad at `size` px square, supersampled then downscaled."""
-    ss = 4
-    s = size * ss
-    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
 
-    def u(v: float) -> float:
-        """A proportion of the canvas, in pixels, so shapes scale together."""
+class Canvas:
+    """A very small RGBA raster with the few primitives the mark needs."""
+
+    def __init__(self, w, h):
+        self.w = w
+        self.h = h
+        # Row-major, four bytes per pixel, straight RGBA.
+        self.px = bytearray(w * h * 4)
+
+    def blend(self, x, y, colour):
+        """Source-over composite of one pixel. Alpha is kept, not replaced."""
+        if x < 0 or y < 0 or x >= self.w or y >= self.h:
+            return
+        r, g, b = colour
+        i = (y * self.w + x) * 4
+        a_src = 255
+        a_dst = self.px[i + 3]
+        if a_dst == 0:
+            self.px[i : i + 4] = bytes((r, g, b, a_src))
+            return
+        # Both source and destination are opaque, so this is a plain lerp.
+        for k, v in enumerate((r, g, b)):
+            self.px[i + k] = (v * a_src + self.px[i + k] * a_dst) // (a_src + a_dst)
+
+    def fill_rect(self, x0, y0, x1, y1, colour, radius=0):
+        """Fill an axis-aligned rect, optionally with rounded corners."""
+        x0, y0 = max(0, int(x0)), max(0, int(y0))
+        x1, y1 = min(self.w, int(x1)), min(self.h, int(y1))
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                if radius and not self._inside_round(x + 0.5, y + 0.5, x0, y0, x1, y1, radius):
+                    continue
+                self.blend(x, y, colour)
+
+    def stroke_round(self, x0, y0, x1, y1, colour, radius, width):
+        """Draw a rounded outline by filling the shape and punching out the
+        interior. Punching rather than tracing keeps this to one primitive."""
+        outer = Canvas(self.w, self.h)
+        outer.fill_rect(x0, y0, x1, y1, colour, radius=radius)
+
+        inner = Canvas(self.w, self.h)
+        ix0, iy0 = x0 + width, y0 + width
+        ix1, iy1 = x1 - width, y1 - width
+        if ix1 > ix0 and iy1 > iy0:
+            inner.fill_rect(ix0, iy0, ix1, iy1, (0, 0, 0), radius=max(0, radius - width))
+
+        for i in range(self.w * self.h):
+            o = i * 4
+            if outer.px[o + 3] and not inner.px[o + 3]:
+                self.blend(i % self.w, i // self.w, outer.px[o : o + 3])
+
+    def fill_ellipse(self, cx, cy, rx, ry, colour):
+        for y in range(max(0, int(cy - ry)), min(self.h, int(cy + ry) + 1)):
+            for x in range(max(0, int(cx - rx)), min(self.w, int(cx + rx) + 1)):
+                dx = (x + 0.5 - cx) / rx
+                dy = (y + 0.5 - cy) / ry
+                if dx * dx + dy * dy <= 1.0:
+                    self.blend(x, y, colour)
+
+    def stroke_ellipse(self, cx, cy, rx, ry, colour, width):
+        outer = Canvas(self.w, self.h)
+        outer.fill_ellipse(cx, cy, rx, ry, colour)
+        inner = Canvas(self.w, self.h)
+        inner.fill_ellipse(cx, cy, max(0.1, rx - width), max(0.1, ry - width), (0, 0, 0))
+        for i in range(self.w * self.h):
+            o = i * 4
+            if outer.px[o + 3] and not inner.px[o + 3]:
+                self.blend(i % self.w, i // self.w, outer.px[o : o + 3])
+
+    def line(self, x0, y0, x1, y1, colour, width=1):
+        """A thick line, drawn by stamping a square brush along the span."""
+        steps = int(max(abs(x1 - x0), abs(y1 - y0)) * 2) + 1
+        for s in range(steps + 1):
+            t = s / steps
+            x = x0 + (x1 - x0) * t
+            y = y0 + (y1 - y0) * t
+            half = width / 2
+            self.fill_rect(x - half, y - half, x + half + 1, y + half + 1, colour)
+
+    def _inside_round(self, px, py, x0, y0, x1, y1, radius):
+        """Point-in-rounded-rectangle test, with the corners treated as circles."""
+        cx = min(max(px, x0 + radius), x1 - radius)
+        cy = min(max(py, y0 + radius), y1 - radius)
+        dx = px - cx
+        dy = py - cy
+        return dx * dx + dy * dy <= radius * radius
+
+    def downsample(self, factor):
+        """Box-filter down to factor-times smaller, which is what gives the edges
+        their antialiasing."""
+        w = self.w // factor
+        h = self.h // factor
+        out = Canvas(w, h)
+        area = factor * factor
+        for y in range(h):
+            for x in range(w):
+                r = g = b = a = 0
+                for dy in range(factor):
+                    row = (y * factor + dy) * self.w
+                    for dx in range(factor):
+                        i = (row + x * factor + dx) * 4
+                        r += self.px[i]
+                        g += self.px[i + 1]
+                        b += self.px[i + 2]
+                        a += self.px[i + 3]
+                o = (y * w + x) * 4
+                out.px[o] = r // area
+                out.px[o + 1] = g // area
+                out.px[o + 2] = b // area
+                out.px[o + 3] = a // area
+        return out
+
+    def bgra_rows_bottom_up(self):
+        """32bpp BGRA, bottom row first, which is what a DIB inside an .ico wants."""
+        out = bytearray()
+        stride = self.w * 4
+        for y in range(self.h - 1, -1, -1):
+            row = y * stride
+            for x in range(self.w):
+                i = row + x * 4
+                out += bytes((self.px[i + 2], self.px[i + 1], self.px[i], self.px[i + 3]))
+        return bytes(out)
+
+
+def lerp(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def draw_pad(size):
+    """Draw the mark at `size` px square, supersampled then downsampled."""
+    s = size * SS
+    c = Canvas(s, s)
+
+    def u(v):
         return v * s
 
-    # --- body -------------------------------------------------------------
     # A controller is wider than tall, so the canvas keeps a margin on the sides.
     pad_w = u(0.86)
     pad_h = u(0.94)
     left = (s - pad_w) / 2
     top = (s - pad_h) / 2
     radius = pad_w * 0.22
-    line = max(1, int(ss * 0.9))
 
-    # Build the body on its own so the gradient can be clipped to its rounded
-    # shape, then composite it through that shape as a mask.
-    body = Image.new("RGBA", (int(pad_w) + 2, int(pad_h) + 2), (0, 0, 0, 0))
-    bd = ImageDraw.Draw(body)
-    bw, bh = body.size
-    bd.rounded_rectangle((0, 0, bw - 1, bh - 1), radius=radius, fill=BODY_BOTTOM + (255,))
+    # Body, with a vertical gradient so the shell reads as lit from above rather
+    # than as a flat grey blob at every size.
+    grad = Canvas(s, s)
+    for y in range(int(top), int(top + pad_h) + 1):
+        t = (y - top) / pad_h
+        grad.fill_rect(left, y, left + pad_w, y + 1, lerp(BODY_TOP, BODY_BOTTOM, t))
+    # Clip the gradient to the rounded silhouette.
+    mask = Canvas(s, s)
+    mask.fill_rect(left, top, left + pad_w, top + pad_h, (255, 255, 255), radius=radius)
+    for i in range(s * s):
+        if not mask.px[i * 4 + 3]:
+            grad.px[i * 4 + 3] = 0
+    c.px[:] = grad.px
 
-    grad = Image.new("RGBA", body.size, (0, 0, 0, 0))
-    gd = ImageDraw.Draw(grad)
-    for y in range(bh):
-        t = y / max(1, bh - 1)
-        gd.line(
-            [(0, y), (bw, y)],
-            fill=tuple(
-                int(BODY_TOP[i] + (BODY_BOTTOM[i] - BODY_TOP[i]) * t) for i in range(3)
-            )
-            + (255,),
-        )
-    body = Image.alpha_composite(body, grad)
+    c.stroke_round(left, top, left + pad_w, top + pad_h, EDGE, radius, SS * 0.9)
 
-    # Outline last, so it sits over the gradient rather than under it.
-    ImageDraw.Draw(body).rounded_rectangle(
-        (0, 0, bw - 1, bh - 1), radius=radius, outline=EDGE + (255,), width=line
-    )
-
-    mask = Image.new("L", body.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, bw - 1, bh - 1), radius=radius, fill=255)
-    img.paste(body, (int(left), int(top)), mask)
-
-    d = ImageDraw.Draw(img)
-
-    # --- touchpad ---------------------------------------------------------
+    # Touchpad.
     tp_w = pad_w * 0.40
     tp_h = pad_h * 0.34
     tp_left = left + (pad_w - tp_w) / 2
     tp_top = top + pad_h * 0.075
-    d.rounded_rectangle(
-        (tp_left, tp_top, tp_left + tp_w, tp_top + tp_h),
-        radius=tp_w * 0.14,
-        fill=TOUCHPAD + (255,),
-        outline=TOUCHPAD_EDGE + (255,),
-        width=max(1, int(ss * 0.7)),
-    )
+    c.fill_rect(tp_left, tp_top, tp_left + tp_w, tp_top + tp_h, TOUCHPAD, radius=tp_w * 0.14)
+    c.stroke_round(tp_left, tp_top, tp_left + tp_w, tp_top + tp_h, TOUCHPAD_EDGE, tp_w * 0.14, SS * 0.7)
 
-    # --- lightbar ---------------------------------------------------------
-    # The one saturated element, where the real one sits: below the touchpad.
+    # Lightbar: the one saturated element, where the real one sits.
     bar_w = pad_w * 0.30
-    bar_h = max(ss * 1.2, pad_h * 0.035)
+    bar_h = max(SS * 1.2, pad_h * 0.035)
     bar_left = left + (pad_w - bar_w) / 2
     bar_top = top + pad_h * 0.505
-    d.rounded_rectangle(
-        (bar_left, bar_top, bar_left + bar_w, bar_top + bar_h),
-        radius=bar_h / 2,
-        fill=LIGHTBAR + (255,),
-    )
+    c.fill_rect(bar_left, bar_top, bar_left + bar_w, bar_top + bar_h, LIGHTBAR, radius=bar_h / 2)
 
-    # --- sticks -----------------------------------------------------------
+    # Sticks.
     stick_r = pad_w * 0.085
     stick_cy = top + pad_h * 0.655
     for cx in (left + pad_w * 0.29, left + pad_w * 0.71):
-        d.ellipse(
-            (cx - stick_r, stick_cy - stick_r, cx + stick_r, stick_cy + stick_r),
-            fill=STICK + (255,),
-            outline=STICK_RING + (255,),
-            width=max(1, int(ss * 0.7)),
-        )
+        c.fill_ellipse(cx, stick_cy, stick_r, stick_r, STICK)
+        c.stroke_ellipse(cx, stick_cy, stick_r, stick_r, STICK_RING, SS * 0.7)
 
-    # --- face buttons -----------------------------------------------------
-    # Four dots in a diamond. Below about 32 px four separate circles turn to
-    # mush, so at small sizes a single bar stands in for the whole cluster: it
-    # still reads as "buttons here" and survives the downscale.
+    # Face buttons. Below 32 px four separate circles turn to mush, so a single
+    # bar stands in: it still reads as "buttons here" and survives the downscale.
     if size >= 32:
         face_r = pad_w * 0.052
         fcx = left + pad_w * 0.855
         for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
-            bx, by = fcx + dx * face_r * 2.0, stick_cy + dy * face_r * 2.0
-            d.ellipse(
-                (bx - face_r, by - face_r, bx + face_r, by + face_r), fill=D_PAD + (255,)
-            )
+            c.fill_ellipse(fcx + dx * face_r * 2.0, stick_cy + dy * face_r * 2.0, face_r, face_r, D_PAD)
     else:
-        bw_ = pad_w * 0.10
-        bh_ = pad_h * 0.13
-        bx_ = left + pad_w * 0.80
-        d.rounded_rectangle(
-            (bx_ - bw_, stick_cy - bh_, bx_ + bw_, stick_cy + bh_),
-            radius=bw_ * 0.4,
-            fill=D_PAD + (255,),
-        )
+        bw = pad_w * 0.10
+        bh = pad_h * 0.13
+        bx = left + pad_w * 0.80
+        c.fill_rect(bx - bw, stick_cy - bh, bx + bw, stick_cy + bh, D_PAD, radius=bw * 0.4)
 
-    return img.resize((size, size), Image.LANCZOS)
+    return c.downsample(SS)
 
 
-def png_bytes(img: Image.Image) -> bytes:
-    """Encode as PNG.
+def bmp_bytes(img):
+    """A 32bpp BGRA DIB with its own mask.
 
-    Not used by default. PNG-compressed frames are legal inside an .ico from
-    Windows Vista on and are much smaller, but windres mis-parses them when it
-    reads the .ico for an RC file: it rewrites each frame as a raw DIB and the
-    group directory ends up pointing at the wrong bytes, which shows up as a
-    corrupt icon rather than as an error.
+    Every frame is a raw DIB, not a PNG. PNG is legal inside an .ico and much
+    smaller, but windres rewrites each frame as a DIB when it reads an .ico for an
+    RC file, and the group directory then points at the wrong bytes. That shows up
+    as a corrupt icon rather than as an error.
     """
-    import io
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG", optimize=True)
-    return buf.getvalue()
-
-
-def bmp_bytes(img: Image.Image) -> bytes:
-    """Encode as a 32bpp BGRA DIB, with the AND mask windres expects.
-
-    This is the only encoding used, because it is the only one windres handles
-    correctly. Every frame therefore carries both an XOR colour bitmap and an
-    alpha mask.
-    """
-    w, h = img.size
-    pixels = img.load()
-
-    # BITMAPINFOHEADER. biHeight is doubled because the XOR and AND masks are
-    # stored stacked, which is what makes this a valid .ico frame rather than a
-    # plain DIB.
+    w, h = img.w, img.h
     header = struct.pack(
         "<IiiHHIIiiII",
         40,     # biSize
         w,      # biWidth
-        h * 2,  # biHeight: XOR followed by AND
+        h * 2,  # biHeight: the XOR and AND masks are stacked
         1,      # biPlanes
         32,     # biBitCount
-        0,      # biCompression: BI_RGB
+        0,      # BI_RGB
         0,      # biSizeImage
         0, 0, 0, 0,
     )
-
-    # XOR mask, bottom-up BGRA. The alpha channel is what modern Windows uses to
-    # draw a rounded, antialiased edge, so it is kept as-is.
-    xor = bytearray()
-    for y in range(h - 1, -1, -1):
-        for x in range(w):
-            r, g, b, a = pixels[x, y]
-            xor += bytes((b, g, r, a))
-
-    # AND mask: one bit per pixel, each row padded to a 4-byte boundary. Fully
-    # opaque, because the alpha channel already carries the shape.
+    xor = img.bgra_rows_bottom_up()
+    # AND mask: one bit per pixel, rows padded to 4 bytes. Fully opaque, because
+    # the alpha channel already carries the shape.
     row_bytes = ((w + 31) // 32) * 4
-    and_mask = bytes(row_bytes * h)
-
-    return header + bytes(xor) + and_mask
+    return header + xor + bytes(row_bytes * h)
 
 
-def build_ico(frames: list[Image.Image]) -> bytes:
-    """Assemble a multi-image .ico with a correct directory."""
-    entries = []
-    payloads = []
-    for img in frames:
-        data = bmp_bytes(img)
-        entries.append((img.size[0], img.size[1], data))
-        payloads.append(data)
-
-    count = len(entries)
+def build_ico(frames):
+    """Assemble a multi-image .ico with a directory that is verified below."""
+    count = len(frames)
     header = struct.pack("<HHH", 0, 1, count)
 
-    # Each ICONDIRENTRY is exactly 16 bytes, and the data starts after all of
-    # them. The size is asserted so a wrong layout cannot pass silently.
     entry_size = struct.calcsize("<BBBBHHII")
     assert entry_size == 16, f"ICONDIRENTRY must be 16 bytes, got {entry_size}"
 
+    payloads = [bmp_bytes(f) for f in frames]
     offset = 6 + 16 * count
     directory = bytearray()
-    for (w, h, data) in entries:
+    for (frame, data) in zip(frames, payloads):
+        w, h = frame.w, frame.h
         directory += struct.pack(
             "<BBBBHHII",
-            w if w < 256 else 0,
+            w if w < 256 else 0,   # a stored 0 means 256
             h if h < 256 else 0,
-            0,      # colour count: 0 means "no palette"
-            0,      # reserved
-            1,      # colour planes
-            32,     # bits per pixel
+            0,                      # no palette
+            0,                      # reserved
+            1,                      # colour planes
+            32,                     # bits per pixel
             len(data),
             offset,
         )
@@ -243,19 +292,17 @@ def build_ico(frames: list[Image.Image]) -> bytes:
     return header + bytes(directory) + b"".join(payloads)
 
 
-def verify(data: bytes, expected: list[int]) -> list[str]:
+def verify(data, expected):
     """Parse the file back and confirm every frame is where it claims to be."""
     problems = []
-    reserved, kind, count = struct.unpack_from("<HHH", data, 0)
+    _reserved, kind, count = struct.unpack_from("<HHH", data, 0)
     if kind != 1:
         problems.append(f"type is {kind}, expected 1 (icon)")
     if count != len(expected):
         problems.append(f"{count} images, expected {len(expected)}")
 
     for i in range(count):
-        w, h, _c, _r, _p, bits, size, off = struct.unpack_from(
-            "<BBBBHHII", data, 6 + i * 16
-        )
+        w, h, _c, _r, _p, bits, size, off = struct.unpack_from("<BBBBHHII", data, 6 + i * 16)
         dim = (w or 256, h or 256)
         if dim != (expected[i], expected[i]):
             problems.append(f"[{i}] is {dim}, expected {expected[i]}")
@@ -267,8 +314,7 @@ def verify(data: bytes, expected: list[int]) -> list[str]:
     return problems
 
 
-def main() -> None:
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+def main():
     frames = [draw_pad(s) for s in SIZES]
     data = build_ico(frames)
 
