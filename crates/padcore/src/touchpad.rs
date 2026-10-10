@@ -275,8 +275,8 @@ mod tests {
             pad_clicked: false,
             x,
             y,
-            raw_x: (x * 191.0) as u8,
-            raw_y: (y * 191.0) as u8,
+            raw_x: (x * 1919.0) as u16,
+            raw_y: (y * 941.0) as u16,
         }
     }
 

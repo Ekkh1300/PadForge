@@ -15,8 +15,12 @@ path = "src/main.rs"
 padcore = { path = "../padcore" }
 
 egui = "0.36"
+# `wgpu`, not `glow`: the window this was developed on has an AMD RX 6700 XT,
+# whose OpenGL is a translation layer, and through it eframe painted a plain
+# white client area with the rest of the app apparently running. The wgpu
+# backend goes through D3D12 instead and draws it correctly.
 eframe = { version = "0.36", default-features = false, features = [
-    "glow",
+    "wgpu",
     "default_fonts",
     "accesskit",
 ] }

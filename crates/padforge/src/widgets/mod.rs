@@ -9,10 +9,6 @@ use crate::theme::*;
 
 /// PlayStation face-button glyphs, drawn as glyphs rather than vector art so
 /// they pick up the UI font instead of needing a bespoke icon set.
-const GLYPH_TRIANGLE: &str = "\u{25B3}";
-const GLYPH_CIRCLE: &str = "\u{25CB}";
-const GLYPH_CROSS: &str = "\u{2715}";
-const GLYPH_SQUARE: &str = "\u{25A1}";
 use padcore::profile::hsv_to_rgb;
 
 /// A DS4 shape drawn as vector paths: the silhouette, two sticks, the D-pad,
@@ -44,12 +40,27 @@ impl PadPreview {
     /// Draw into the available space, preserving a 3:2-ish aspect ratio.
     pub fn show(&mut self, ui: &mut egui::Ui) -> egui::Response {
         // The preview is capped so it shares the dashboard with the axis
-        // readouts rather than pushing them below the fold. A taller window
-        // gives it more room, but never more than the cap.
+        // readouts rather than pushing them below the fold. Landscape, because
+        // a controller is wider than it is tall: a portrait box leaves a strip
+        // of nothing hanging under the grips.
         let available = ui.available_size();
-        let max_h = (available.y * 0.52).clamp(200.0, 380.0);
-        let size = Vec2::new(available.x.min(max_h * 0.72).min(300.0), max_h);
-        let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+        let box_w = available.x.min(available.y * 0.62).clamp(200.0, 310.0);
+        // Just tall enough for the silhouette: the drawing runs from the
+        // triggers near the top edge to the bottom of the grips, and the
+        // leftover was a band of nothing between them and the next row.
+        let size = Vec2::new(box_w, box_w * 0.60);
+        // Take the whole row and draw into the middle of it. A left-aligned box
+        // of this width left a third of the card empty on the right and pushed
+        // the controller against its left edge.
+        let (row, response) =
+            ui.allocate_exact_size(Vec2::new(available.x, size.y), Sense::hover());
+        let rect = Rect::from_min_size(
+            Pos2::new(
+                row.min.x + ((row.width() - size.x) * 0.5).max(0.0),
+                row.min.y,
+            ),
+            size,
+        );
         let painter = ui.painter_at(rect);
 
         if self.dimmed {
@@ -65,111 +76,190 @@ impl PadPreview {
             return response;
         }
 
+        let w = size.x;
+        let h = size.y;
         let scale = size.x / 340.0;
-        let body_w = size.x * 0.72;
-        let body_h = size.y * 0.56;
         let cx = rect.center().x;
-        let top = rect.min.y + size.y * 0.06;
+        // Room above the body for the triggers and the lightbar.
+        //
+        // Not 96% of the box: the grips bulge past the slab on both sides, so a
+        // body that nearly fills the box puts the widest part of the controller
+        // outside the clip and cuts each grip off with a straight vertical edge.
+        let body_w = w * 0.92;
+        let body_h = body_w * 0.44;
+        let body_top = rect.min.y + h * 0.14;
+        let body_rect = Rect::from_min_max(
+            Pos2::new(cx - body_w / 2.0, body_top),
+            Pos2::new(cx + body_w / 2.0, body_top + body_h),
+        );
+        // A lobe hanging from each lower corner. The slab alone is a box; the
+        // pair of grips is what makes the outline read as a controller, which
+        // is what the preview was failing to do.
+        let grip_r = body_w * 0.16;
+        let grip_cy = body_rect.max.y - grip_r * 0.35;
+        let grips = [
+            Pos2::new(body_rect.min.x + grip_r * 0.85, grip_cy),
+            Pos2::new(body_rect.max.x - grip_r * 0.85, grip_cy),
+        ];
 
         // Lightbar glow first, so it sits behind the body.
-        let bar_center = Pos2::new(cx, top + 10.0 * scale);
-        glow(&painter, bar_center, 62.0 * scale, self.lightbar);
+        let bar_center = Pos2::new(cx, body_rect.min.y);
+        glow(&painter, bar_center, h * 0.26, self.lightbar);
 
         // --- body ------------------------------------------------------
-        let body_top_left = Pos2::new(cx - body_w / 2.0, top + 14.0 * scale);
-        let body_rect = Rect::from_min_max(
-            body_top_left,
-            Pos2::new(cx + body_w / 2.0, top + 14.0 * scale + body_h),
-        );
-        // Rounded rectangle: egui's rect_filled takes a radius, which is exactly
-        // the shape we want here.
-        painter.rect_filled(body_rect, RADIUS_LG, SURFACE_RAISED);
+        //
+        // Every part is stroked first and filled afterwards, so a fill covers
+        // the stroke wherever two parts overlap and only the outline of the
+        // whole silhouette survives. Stroking them as they are drawn instead
+        // leaves the seam of each grip running across the middle of the pad.
+        //
+        // The fill is darker than the card and the line brighter than both: at
+        // the same fill the body was the same colour as the card it sat on, so
+        // the outline was all there was of it.
+        for grip in grips {
+            painter.circle_stroke(grip, grip_r, Stroke::new(1.5, TEXT_FAINT));
+        }
         painter.rect_stroke(
             body_rect,
             RADIUS_LG,
-            Stroke::new(1.0, BORDER),
+            Stroke::new(1.5, TEXT_FAINT),
             egui::StrokeKind::Middle,
         );
+        for grip in grips {
+            painter.circle_filled(grip, grip_r, SURFACE);
+        }
+        painter.rect_filled(body_rect, RADIUS_LG, SURFACE);
 
         // --- lightbar --------------------------------------------------
-        let bar_w = body_w * 0.44;
-        let bar_h = 4.0 * scale;
+        let bar_w = body_w * 0.26;
+        let bar_h = (4.0 * scale).max(3.0);
         let bar_rect = Rect::from_min_max(
-            Pos2::new(cx - bar_w / 2.0, bar_center.y - bar_h / 2.0),
-            Pos2::new(cx + bar_w / 2.0, bar_center.y + bar_h / 2.0),
+            Pos2::new(cx - bar_w / 2.0, bar_center.y - bar_h),
+            Pos2::new(cx + bar_w / 2.0, bar_center.y + bar_h * 0.5),
         );
         painter.rect_filled(bar_rect, RADIUS_PILL, self.lightbar);
 
         let r = &self.report;
         let b = r.buttons;
+        let body_cy = body_rect.center().y;
 
-        // --- sticks ----------------------------------------------------
-        // Left stick sits above-left of centre, right stick below-right.
-        let l_stick = Pos2::new(cx - body_w * 0.24, body_rect.center().y - body_h * 0.20);
-        let r_stick = Pos2::new(cx + body_w * 0.24, body_rect.center().y + body_h * 0.20);
-        draw_stick(
+        // --- triggers ----------------------------------------------------
+        // Above the body, on the top edge where the hardware has them. They
+        // used to sit along the bottom, below the grips, which is nowhere.
+        let trig_y = body_rect.min.y - h * 0.055;
+        let trig_w = body_w * 0.20;
+        let trig_x = body_w * 0.33;
+        draw_pill(
             &painter,
-            l_stick,
-            30.0 * scale,
-            (r.left_x, r.left_y),
-            ACCENT,
-            TEXT_MUTED,
+            Pos2::new(cx - trig_x, trig_y),
+            trig_w,
+            15.0 * scale,
+            "L2",
+            r.l2,
+            b.contains(Buttons::L2),
         );
-        draw_stick(
+        draw_pill(
             &painter,
-            r_stick,
-            26.0 * scale,
-            (r.right_x, r.right_y),
-            self.lightbar,
-            TEXT_MUTED,
+            Pos2::new(cx + trig_x, trig_y),
+            trig_w,
+            15.0 * scale,
+            "R2",
+            r.r2,
+            b.contains(Buttons::R2),
         );
 
-        // --- d-pad -----------------------------------------------------
-        let dpad = Pos2::new(cx + body_w * 0.26, body_rect.center().y - body_h * 0.20);
+        // L1 and R1: a thin bar along the top of each shoulder, under its
+        // trigger. Neither had a place on the preview before. They sit tight
+        // against the top edge, because a finger's worth of gap here is what
+        // the top face button used to run into.
+        for (side, mask) in [(cx - trig_x, Buttons::L1), (cx + trig_x, Buttons::R1)] {
+            draw_shoulder(
+                &painter,
+                Rect::from_center_size(
+                    Pos2::new(side, body_rect.min.y + 6.0 * scale),
+                    Vec2::new(trig_w, 8.0 * scale),
+                ),
+                b.contains(mask),
+                if mask == Buttons::L1 { "L1" } else { "R1" },
+            );
+        }
+
+        // --- touchpad ----------------------------------------------------
+        // Centred, between the two clusters, where the hardware has it, and
+        // it lights up with the state it reports: touched, then clicked.
+        let touch_size = Vec2::new(body_w * 0.17, body_h * 0.44);
+        let touch_rect = Rect::from_center_size(Pos2::new(cx, body_cy - body_h * 0.05), touch_size);
+        let (touch_fill, touch_edge) = if r.touch.pad_clicked {
+            (ACCENT_DIM, ACCENT)
+        } else if r.touch.pad_touched {
+            (ACCENT_FAINT, ACCENT_DIM)
+        } else {
+            // Recessed, not flush: the pad has the body's colour, so a touchpad
+            // drawn in it would have been a rectangle of nothing.
+            (BACKDROP, BORDER)
+        };
+        painter.rect_filled(touch_rect, RADIUS_SM, touch_fill);
+        painter.rect_stroke(
+            touch_rect,
+            RADIUS_SM,
+            Stroke::new(1.0, touch_edge),
+            egui::StrokeKind::Middle,
+        );
+
+        // --- d-pad -------------------------------------------------------
+        // Upper left, where it is on the pad. The preview had the d-pad on the
+        // right and the face buttons on the left: a mirrored controller, which
+        // is why it did not read as one.
+        //
+        // The clusters sit in the upper half and the sticks in the lower, with
+        // the radii chosen so nothing touches: at the first sizing the bottom
+        // face button ran straight into the right stick, and at the second the
+        // top one ran under the R1 bar.
+        let cluster_y = body_cy - body_h * 0.16;
         draw_dpad(
             &painter,
-            dpad,
-            26.0 * scale,
+            Pos2::new(cx - body_w * 0.30, cluster_y),
+            body_h * 0.20,
             b.contains(Buttons::UP),
             b.contains(Buttons::DOWN),
             b.contains(Buttons::LEFT),
             b.contains(Buttons::RIGHT),
         );
 
-        // --- face buttons ----------------------------------------------
+        // --- face buttons -----------------------------------------------
         // Diamond layout: triangle on top, circle right, cross bottom,
         // square left. The fill shows the DS4 press; the ring shows whether the
         // button is also lit on the virtual pad, so a remap is visible here
         // without cross-checking the Output page.
-        let face = Pos2::new(cx - body_w * 0.26, body_rect.center().y + body_h * 0.20);
-        let fr = 24.0 * scale;
+        let face = Pos2::new(cx + body_w * 0.30, cluster_y);
+        let fr = body_h * 0.095;
         let gap = fr * 1.42;
         let out = self.output_buttons;
-        for (offset, glyph, mask, target, idle) in [
+        for (offset, which, mask, target, idle) in [
             (
                 Vec2::new(0.0, -gap),
-                GLYPH_TRIANGLE,
+                Face::Triangle,
                 Buttons::TRIANGLE,
                 XButtons::Y,
                 TEXT,
             ),
             (
                 Vec2::new(gap, 0.0),
-                GLYPH_CIRCLE,
+                Face::Circle,
                 Buttons::CIRCLE,
                 XButtons::B,
                 TEXT,
             ),
             (
                 Vec2::new(0.0, gap),
-                GLYPH_CROSS,
+                Face::Cross,
                 Buttons::CROSS,
                 XButtons::A,
                 ACCENT,
             ),
             (
                 Vec2::new(-gap, 0.0),
-                GLYPH_SQUARE,
+                Face::Square,
                 Buttons::SQUARE,
                 XButtons::X,
                 TEXT,
@@ -179,57 +269,56 @@ impl PadPreview {
                 &painter,
                 face + offset,
                 fr,
-                glyph,
+                which,
                 b.contains(mask),
                 out.any(target),
                 idle,
             );
         }
 
-        // --- shoulders and triggers ------------------------------------
-        let shoulder_y = body_rect.max.y - body_h * 0.06;
-        draw_pill(
+        // --- sticks ------------------------------------------------------
+        // Under the two clusters, left and right, as on the hardware.
+        let stick_y = body_cy + body_h * 0.30;
+        draw_stick(
             &painter,
-            Pos2::new(cx - body_w * 0.34, shoulder_y),
-            body_w * 0.22,
-            13.0 * scale,
-            "L2",
-            r.l2,
-            b.contains(Buttons::L2),
+            Pos2::new(cx - body_w * 0.30, stick_y),
+            body_h * 0.19,
+            (r.left_x, r.left_y),
+            ACCENT,
+            TEXT_MUTED,
         );
-        draw_pill(
+        draw_stick(
             &painter,
-            Pos2::new(cx + body_w * 0.34, shoulder_y),
-            body_w * 0.22,
-            13.0 * scale,
-            "R2",
-            r.r2,
-            b.contains(Buttons::R2),
+            Pos2::new(cx + body_w * 0.30, stick_y),
+            body_h * 0.19,
+            (r.right_x, r.right_y),
+            self.lightbar,
+            TEXT_MUTED,
         );
 
-        // --- system row ------------------------------------------------
-        let sys_y = body_rect.max.y - 9.0 * scale;
+        // --- system row --------------------------------------------------
+        // Share left of the touchpad, Options right of it, PS underneath.
+        let sys_y = body_cy - body_h * 0.05;
+        let sys_x = touch_size.x * 0.5 + 14.0;
         draw_system(
             &painter,
-            Pos2::new(cx - body_w * 0.30, sys_y),
-            7.0 * scale,
+            Pos2::new(cx - sys_x, sys_y),
+            6.0 * scale,
             "[]",
             b.contains(Buttons::SHARE),
         );
         draw_system(
             &painter,
-            Pos2::new(cx, sys_y),
-            8.0 * scale,
+            Pos2::new(cx + sys_x, sys_y),
+            6.0 * scale,
             "=",
             b.contains(Buttons::OPTIONS),
         );
-        draw_system(
-            &painter,
-            Pos2::new(cx + body_w * 0.30, sys_y),
-            7.0 * scale,
-            "[]",
-            r.touch.pad_clicked,
-        );
+        // The PS button carries no bit of its own in the report, so it is drawn
+        // as it sits rather than as a state that would never change.
+        let ps = Pos2::new(cx, body_cy + body_h * 0.36);
+        painter.circle_filled(ps, 9.0 * scale, SURFACE_HOVER);
+        painter.circle_stroke(ps, 9.0 * scale, Stroke::new(1.0, BORDER));
 
         response
     }
@@ -250,7 +339,9 @@ fn draw_stick(
     active: Color32,
     idle: Color32,
 ) {
-    painter.circle_filled(center, radius, SURFACE);
+    // The well is darker than the body it is cut into, so it reads as a socket
+    // rather than as a ring drawn on a flat plate.
+    painter.circle_filled(center, radius, BACKDROP);
     painter.circle_stroke(center, radius, Stroke::new(1.0, BORDER));
 
     let magnitude = (x * x + y * y).sqrt().clamp(0.0, 1.0);
@@ -258,10 +349,18 @@ fn draw_stick(
     // The report's Y is already inverted, so +y is up on screen.
     let cap = center + Vec2::new(x * travel, -y * travel);
     let cap_r = radius * 0.52;
-    if magnitude > 0.02 {
+    let deflected = magnitude > 0.02;
+    if deflected {
         glow(painter, cap, cap_r * 1.5, active);
     }
-    painter.circle_filled(cap, cap_r, if magnitude > 0.02 { active } else { idle });
+    // A dark cap in a lighter well, so the two sticks do not sit on the body
+    // as pale discs; the accent only arrives when the stick actually moves.
+    painter.circle_filled(cap, cap_r, if deflected { active } else { SURFACE_HOVER });
+    painter.circle_stroke(
+        cap,
+        cap_r,
+        Stroke::new(1.0, if deflected { active } else { idle }),
+    );
 }
 
 /// A cross-shaped D-pad whose arms light up individually.
@@ -309,12 +408,75 @@ fn draw_dpad(
     }
 }
 
+/// Which face button a glyph belongs to.
+///
+/// Drawn as shapes rather than as text: the geometric symbols the default egui
+/// fonts ship with are a partial set, and the triangle and the cross came out
+/// as whatever the font fallback happened to offer -- a hollow box and a dash
+/// -- which is a poor way to show which button is down.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Face {
+    Triangle,
+    Circle,
+    Cross,
+    Square,
+}
+
+impl Face {
+    /// The glyph, in the button's current colour.
+    fn draw(&self, painter: &egui::Painter, center: Pos2, r: f32, colour: Color32) {
+        let d = r * 0.46;
+        let stroke = Stroke::new(1.6, colour);
+        match self {
+            Face::Triangle => {
+                let pts = vec![
+                    Pos2::new(center.x, center.y - d),
+                    Pos2::new(center.x + d * 0.92, center.y + d * 0.72),
+                    Pos2::new(center.x - d * 0.92, center.y + d * 0.72),
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    pts,
+                    Color32::TRANSPARENT,
+                    stroke,
+                ));
+            }
+            Face::Circle => {
+                painter.circle_stroke(center, d * 0.86, stroke);
+            }
+            Face::Cross => {
+                painter.line_segment(
+                    [
+                        Pos2::new(center.x - d * 0.8, center.y - d * 0.8),
+                        Pos2::new(center.x + d * 0.8, center.y + d * 0.8),
+                    ],
+                    stroke,
+                );
+                painter.line_segment(
+                    [
+                        Pos2::new(center.x + d * 0.8, center.y - d * 0.8),
+                        Pos2::new(center.x - d * 0.8, center.y + d * 0.8),
+                    ],
+                    stroke,
+                );
+            }
+            Face::Square => {
+                painter.rect_stroke(
+                    Rect::from_center_size(center, Vec2::splat(d * 1.5)),
+                    2.0,
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+            }
+        }
+    }
+}
+
 /// One of the four face buttons.
 fn draw_face_button(
     painter: &egui::Painter,
     center: Pos2,
     r: f32,
-    glyph: &str,
+    face: Face,
     pressed: bool,
     mapped: bool,
     idle: Color32,
@@ -331,13 +493,14 @@ fn draw_face_button(
             if pressed || mapped { ACCENT } else { BORDER },
         ),
     );
-    painter.text(
-        center,
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        FontId::proportional(r * 1.15),
-        if pressed { BACKDROP } else { idle },
-    );
+    let colour = if pressed {
+        BACKDROP
+    } else if mapped {
+        ACCENT
+    } else {
+        idle
+    };
+    face.draw(painter, center, r, colour);
 }
 
 /// A trigger bar showing both analog pressure and its digital state.
@@ -377,6 +540,32 @@ fn draw_pill(
         label,
         FontId::proportional(9.0),
         if amount > 0.5 { BACKDROP } else { TEXT_MUTED },
+    );
+}
+
+/// A shoulder button: a thin bar along the top of the body, under its trigger.
+///
+/// L1 and R1 had no place on the preview at all before, so a press of either
+/// only showed up in the list of controls underneath.
+fn draw_shoulder(painter: &egui::Painter, rect: Rect, pressed: bool, label: &str) {
+    let edge = if pressed { ACCENT } else { BORDER };
+    painter.rect_filled(
+        rect,
+        RADIUS_PILL,
+        if pressed { ACCENT } else { SURFACE_HOVER },
+    );
+    painter.rect_stroke(
+        rect,
+        RADIUS_PILL,
+        Stroke::new(1.0, edge),
+        egui::StrokeKind::Middle,
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(7.0),
+        if pressed { BACKDROP } else { TEXT_FAINT },
     );
 }
 
@@ -489,10 +678,14 @@ pub fn trigger_bar(ui: &mut egui::Ui, label: &str, value: f32, pressed: bool) {
 }
 
 /// A compact battery indicator.
-pub fn battery_pill(ui: &mut egui::Ui, level: u8, charging: bool) {
-    let fraction = (level as f32 / 10.0).clamp(0.0, 1.0);
+///
+/// It takes the whole status rather than a level and a flag: the pad counts to
+/// a different ceiling depending on whether it is being charged, so a level on
+/// its own does not say how much charge is left.
+pub fn battery_pill(ui: &mut egui::Ui, battery: &padcore::report::Battery) {
+    let fraction = battery.fraction();
     let colour = battery_color(fraction);
-    let text = if charging {
+    let text = if battery.charging {
         format!("+ {}%", (fraction * 100.0) as u32)
     } else {
         format!("{}%", (fraction * 100.0) as u32)

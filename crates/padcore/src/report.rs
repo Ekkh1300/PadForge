@@ -39,20 +39,40 @@ impl Transport {
     }
 }
 
-/// Battery charge level, 0..=10, plus charging flag.
+/// Battery charge level, as the pad reports it, plus its charging flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Battery {
-    /// 0 = empty, 10 = full.
+    /// The raw nibble: 0 = empty, 8 = full while on battery, 11 = full while
+    /// charging. It is not a percentage and the two ceilings differ, which is
+    /// what [`Battery::fraction`] accounts for.
     pub level: u8,
     pub charging: bool,
 }
 
 impl Battery {
-    /// Remaining charge as a 0..=1 fraction.
-    pub fn fraction(&self) -> f32 {
-        (self.level as f32 / 10.0).clamp(0.0, 1.0)
+    /// Decode the status byte of an input report: level in the low nibble,
+    /// charging in bit four.
+    ///
+    /// This is where DS4Windows reads it (offset 30 over USB). It used to come
+    /// from a feature report instead, which never carried an answer, so the
+    /// dashboard showed a flat pad whether or not one was plugged in.
+    pub fn from_status(raw: u8) -> Self {
+        Self {
+            level: raw & 0x0F,
+            charging: raw & 0x10 != 0,
+        }
     }
 
+    /// Remaining charge as a 0..=1 fraction.
+    ///
+    /// The pad counts to 8 on battery and to 11 on charge, so one divisor
+    /// would under-read a plugged-in pad and over-read one that is not.
+    pub fn fraction(&self) -> f32 {
+        let ceiling = if self.charging { 11.0 } else { 8.0 };
+        (self.level as f32 / ceiling).clamp(0.0, 1.0)
+    }
+
+    /// True when the pad is nearly empty and nothing is topping it up.
     pub fn is_low(&self) -> bool {
         !self.charging && self.level <= 2
     }
@@ -151,9 +171,12 @@ pub struct TouchState {
     /// Finger 1 position, normalised to 0..=1 over the *active* pad area.
     pub x: f32,
     pub y: f32,
-    /// Raw sensor coordinate, 0..=191.
-    pub raw_x: u8,
-    pub raw_y: u8,
+    /// Raw sensor coordinate as the pad sends it, 12 bits: X up to 1919, Y up
+    /// to 941. Kept wide because the packed field is wide; truncating it to a
+    /// byte loses the top bits and wraps, so a finger crossing the middle of the
+    /// pad reports itself jumping back to the left edge.
+    pub raw_x: u16,
+    pub raw_y: u16,
 }
 
 /// One decoded DS4 input frame.
@@ -209,8 +232,15 @@ pub const ACCEL_SCALE: f32 = 1.0 / 8192.0;
 /// Gyroscope LSB -> degrees per second.
 pub const GYRO_SCALE: f32 = 1.0 / 16.0;
 
-/// The touchpad's usable coordinate range. Values outside are clamped away.
-const TOUCHPAD_ACTIVE_MAX: u8 = 191;
+/// The touchpad's usable coordinate range, one divisor per axis.
+///
+/// The surface is about twice as wide as it is tall, and a single divisor for
+/// both squashes whichever axis it does not belong to: normalising Y by the X
+/// range would put the entire vertical travel in the top half of the screen.
+/// Both values are the ones the pointer code scales back up by (1920x942), so a
+/// finger crossing the pad moves the cursor by the same distance it travelled.
+const TOUCHPAD_ACTIVE_X: f32 = 1919.0;
+const TOUCHPAD_ACTIVE_Y: f32 = 941.0;
 
 /// Offsets into the report, selected per transport.
 ///
@@ -284,13 +314,22 @@ pub fn parse(buf: &[u8]) -> Option<Ds4Report> {
 
     // Byte 4 of the analog block: D-pad in the high nibble, face buttons in the low.
     let face = buf[a + 4];
-    // Byte 5 is the shoulder cluster; byte 6 is the digital L2/R2 pair.
+    // Byte 5 is the shoulder cluster: L1, R1, the digital L2/R2 pair, Share,
+    // Options, L3 and R3, one bit each from bit 0 upward.
     let shoulder = buf[a + 5];
-    let triggers = buf[a + 6];
-    // Byte 7 is the analog trigger the finger is not resting on; byte 8 is the
-    // one being touched. Take the max so a resting finger on L1 still shows up.
-    let l2 = buf[a + 7].max(triggers & 0x0F);
-    let r2 = buf[a + 8].max((triggers >> 4) & 0x0F);
+    // Byte 6 is the button flags byte -- PS, touchpad click, and the frame
+    // counter in its upper six bits. Bytes 7 and 8 are the analog triggers.
+    //
+    // Byte 6 used to be read as a second, coarser reading of the triggers and
+    // OR-ed into them. It is not one, and the difference is not subtle: its
+    // middle bits *are* the frame counter, so an untouched L2 counted along with
+    // the poll rate between two and three percent, and because any non-zero
+    // value also set the L2 button, a game saw the trigger half-held while the
+    // pad sat on the desk with no finger near it. DS4Windows reads the trigger
+    // from bytes 8 and 9 and nothing else, which is what this now does.
+    let flags = buf[a + 6];
+    let l2 = buf[a + 7];
+    let r2 = buf[a + 8];
 
     let mut bits = 0u16;
     if face & 0x01 != 0 {
@@ -324,10 +363,10 @@ pub fn parse(buf: &[u8]) -> Option<Ds4Report> {
         bits |= Buttons::R1;
     }
     if shoulder & 0x04 != 0 {
-        bits |= Buttons::R3;
+        bits |= Buttons::L2;
     }
     if shoulder & 0x08 != 0 {
-        bits |= Buttons::L3;
+        bits |= Buttons::R2;
     }
     if shoulder & 0x10 != 0 {
         bits |= Buttons::SHARE;
@@ -335,35 +374,62 @@ pub fn parse(buf: &[u8]) -> Option<Ds4Report> {
     if shoulder & 0x20 != 0 {
         bits |= Buttons::OPTIONS;
     }
-    if l2 > 0 {
+    if shoulder & 0x40 != 0 {
+        bits |= Buttons::L3;
+    }
+    if shoulder & 0x80 != 0 {
+        bits |= Buttons::R3;
+    }
+
+    // L2 and R2 as buttons, from either reading of them. The analog value is
+    // the sensitive one and fires as soon as the trigger moves; the digital bit
+    // is the hardware's own click, which arrives later but is there even if the
+    // analog byte is stuck.
+    //
+    // Bits 2 and 3 used to be decoded as R3 and L3 instead, with the real L3/R3
+    // -- bits 6 and 7, the last two in the byte -- never read at all. So pressing
+    // a trigger reported a thumbstick click to the game, and clicking either
+    // thumbstick did nothing.
+    if l2 > 0 || shoulder & 0x04 != 0 {
         bits |= Buttons::L2;
     }
-    if r2 > 0 {
+    if r2 > 0 || shoulder & 0x08 != 0 {
         bits |= Buttons::R2;
     }
 
-    // Touchpad. The flags byte is the same one that carries PS and the frame
-    // counter, so it is read from its own offset rather than from inside the
-    // analog block, where it would alias the d-pad.
+    // Touchpad. The packet starts at byte 34 of the analog block -- byte 35
+    // counting the report id -- and not at byte 9, where it used to be read.
     //
-    // Byte 9 of the analog block holds the touch flags, and the two 7-bit
-    // coordinates follow it. Each coordinate is 12 bits, packed 8-4 across a
-    // byte boundary rather than 8-8, which is why the low nibble of the middle
-    // byte belongs to X and the high nibble to Y.
-    let touch_flags = buf[a + 9];
-    let (raw_tx, raw_ty) = if a + 12 <= buf.len() {
-        // 12-bit value: high nibble then low byte.
-        let x = ((buf[a + 11] & 0x0F) as u16) << 8 | buf[a + 10] as u16;
-        let y = (buf[a + 12] as u16) << 4 | ((buf[a + 11] >> 4) as u16);
-        (x.min(0xFFF) as u8, y.min(0xFFF) as u8)
+    // Bytes 9 and 10 are a 16-bit timestamp the pad stamps on every frame, so
+    // the flags byte was following the clock: bit 7 is a timestamp bit, and bit 0
+    // is the lowest bit of the counter, which toggles every other frame. The pad
+    // therefore reported itself tapped a few times a second with nobody touching
+    // it, and the coordinates came out of the gyro. The captured frame has 0x80
+    // here -- idle -- and the touch block itself starts at 37 on Bluetooth,
+    // which is what DS4Windows reads.
+    //
+    // Four bytes make up one touch: the flags byte, whose bit 7 set means *no*
+    // finger is down, then X and Y as 12 bits each packed 8-4 across the byte
+    // boundaries rather than 8-8, which is why the low nibble of the middle byte
+    // belongs to X and the high nibble to Y.
+    let touch_flags = if a + 34 < buf.len() {
+        buf[a + 34]
+    } else {
+        0x80 // short buffer: report no finger rather than a phantom one
+    };
+    let (raw_tx, raw_ty) = if a + 37 < buf.len() {
+        let mid = buf[a + 36];
+        let x = ((mid & 0x0F) as u16) << 8 | buf[a + 35] as u16;
+        let y = (buf[a + 37] as u16) << 4 | ((mid >> 4) as u16);
+        (x.min(0xFFF), y.min(0xFFF))
     } else {
         (0, 0)
     };
     let touch = TouchState {
-        pad_touched: touch_flags & 0x80 != 0,
-        pad_clicked: touch_flags & 0x01 != 0,
-        x: norm_touch(raw_tx),
-        y: norm_touch(raw_ty),
+        pad_touched: touch_flags & 0x80 == 0,
+        pad_clicked: flags & 0x02 != 0,
+        x: norm_touch(raw_tx, TOUCHPAD_ACTIVE_X),
+        y: norm_touch(raw_ty, TOUCHPAD_ACTIVE_Y),
         raw_x: raw_tx,
         raw_y: raw_ty,
     };
@@ -409,17 +475,12 @@ pub fn parse(buf: &[u8]) -> Option<Ds4Report> {
         gyro,
         accel,
         touch,
-        battery: Battery::default(),
+        // DS4Windows reads the battery out of the input report (offset 30 over
+        // USB); the status byte carries no frame of its own, so a device with
+        // no battery data would still report something rather than nothing.
+        battery: Battery::from_status(buf.get(a + 29).copied().unwrap_or(0)),
         fresh: true,
     })
-}
-
-/// Merge a battery level read from a feature report into an existing frame.
-pub fn apply_battery(report: &mut Ds4Report, raw: u8) {
-    report.battery = Battery {
-        level: raw & 0x0F,
-        charging: raw & 0x10 != 0,
-    };
 }
 
 /// Map a raw 0..=255 stick byte onto -1..=1.
@@ -437,8 +498,8 @@ fn axis(raw: u8) -> f32 {
     out.clamp(-1.0, 1.0)
 }
 
-fn norm_touch(raw: u8) -> f32 {
-    (raw as f32 / TOUCHPAD_ACTIVE_MAX as f32).clamp(0.0, 1.0)
+fn norm_touch(raw: u16, axis_max: f32) -> f32 {
+    (raw as f32 / axis_max).clamp(0.0, 1.0)
 }
 
 fn i16le(b: &[u8]) -> i16 {
@@ -726,25 +787,125 @@ mod tests {
     }
 
     #[test]
-    fn touch_flags_are_the_high_bit_not_the_low_bits() {
-        // Bit 7 of the flags byte is "finger present", bit 0 is the click. The
-        // two used to be swapped, so a resting pad read as touched and a press
-        // read as a light tap.
-        const FLAGS: usize = 3 + 9;
+    fn an_idle_pad_reports_no_touch_and_no_click() {
+        // The captured frame is a pad nobody is touching. It must decode as
+        // untouched: bit 7 of the flags byte is set precisely when no finger is
+        // down, and the click lives in the button byte, not in the flags.
+        const FLAGS: usize = 3 + 34; // analog block is 3 on Bluetooth
+        const BUTTONS: usize = 3 + 6; // PS / touchpad click / frame counter
+        const TOUCH_X: usize = 3 + 35;
+        const TOUCH_Y_HI: usize = 3 + 37;
 
-        let mut b = real_bluetooth_report(83);
-        b[FLAGS] |= 0x80;
+        let b = real_bluetooth_report(83);
+        assert_eq!(b[FLAGS], 0x80, "idle frame, no finger");
         let r = parse(&b).expect("should decode");
-        assert!(r.touch.pad_touched, "bit 7 set means a finger is down");
-        assert!(
-            !r.touch.pad_clicked,
-            "bit 0 is clear so the pad is not clicked"
+        assert!(!r.touch.pad_touched, "bit 7 set means no finger is down");
+        assert!(!r.touch.pad_clicked, "the click button is not pressed");
+        assert_eq!((r.touch.raw_x, r.touch.raw_y), (0, 0), "nothing on it");
+
+        // A finger landing: the flag clears, the coordinates come with it.
+        let mut b = b;
+        b[FLAGS] = 0x00;
+        b[TOUCH_X] = 0x21; // low byte of X
+        b[FLAGS + 2] = 0x05; // X high nibble 5, Y low nibble 0
+        b[TOUCH_Y_HI] = 0x03; // Y high byte
+        let r = parse(&b).expect("should decode");
+        assert!(r.touch.pad_touched, "bit 7 clear means a finger is down");
+        assert!(!r.touch.pad_clicked, "the click button is separate");
+        assert_eq!(r.touch.raw_x, (5 << 8) | 0x21, "X is 12 bits, packed 8-4");
+        assert_eq!(
+            r.touch.raw_y,
+            3 << 4,
+            "Y takes the high nibble of the middle byte"
         );
+        assert!(r.touch.x > 0.0 && r.touch.x < 1.0, "x = {}", r.touch.x);
+        assert!(r.touch.y > 0.0 && r.touch.y < 1.0, "y = {}", r.touch.y);
 
-        b[FLAGS] = (b[FLAGS] & !0x80) | 0x01;
+        // The click comes from byte 6, bit 1 -- the same byte as the PS button
+        // and the frame counter, and the counter is what used to make the pad
+        // tap by itself a few times a second.
+        b[BUTTONS] |= 0x02;
         let r = parse(&b).expect("should decode");
-        assert!(!r.touch.pad_touched, "bit 7 clear means no finger");
-        assert!(r.touch.pad_clicked, "bit 0 set means the pad is clicked");
+        assert!(r.touch.pad_clicked, "button byte bit 1 is the click");
+    }
+
+    #[test]
+    fn resting_triggers_are_zero() {
+        // Byte 6 is the frame counter, not a coarse trigger. Reading it as one
+        // left an untouched L2 sitting at two or three percent, moving with the
+        // poll rate, while the same value counted as a half-held trigger to any
+        // game. DS4Windows reads bytes 8 and 9 only.
+        const L2: usize = 1 + 7;
+        const R2: usize = 1 + 8;
+        const BUTTONS: usize = 1 + 6;
+        const SHOULDER: usize = 1 + 5;
+
+        let mut b = [0u8; 64];
+        b[0] = 0x01;
+        b[1] = 128;
+        b[2] = 128;
+        b[3] = 128;
+        b[4] = 128;
+        b[5] = 0x08; // neutral d-pad
+        b[L2] = 0;
+        b[R2] = 0;
+        for counter in [0u8, 1, 2, 3, 47, 48, 49, 255] {
+            b[BUTTONS] = counter << 2; // how the pad packs the frame counter
+            let r = parse(&b).expect("should decode");
+            assert_eq!(r.l2, 0.0, "L2 idle, frame counter {counter}");
+            assert_eq!(r.r2, 0.0, "R2 idle, frame counter {counter}");
+            assert!(
+                !r.buttons.any(Buttons::L2 | Buttons::R2),
+                "no trigger held, frame counter {counter}"
+            );
+        }
+
+        // A real press still reads, and the digital bit counts too.
+        b[L2] = 255;
+        let r = parse(&b).expect("should decode");
+        assert_eq!(r.l2, 1.0, "L2 fully pressed");
+        assert!(r.buttons.any(Buttons::L2), "analog sets the button");
+
+        b[L2] = 0;
+        b[SHOULDER] |= 0x04; // digital L2 click
+        let r = parse(&b).expect("should decode");
+        assert!(
+            r.buttons.any(Buttons::L2),
+            "the hardware's own click counts even if the analog byte is stuck"
+        );
+    }
+
+    #[test]
+    fn l3_and_r3_live_in_the_last_two_bits_of_the_shoulder_byte() {
+        // Bits 2 and 3 are the digital L2/R2 pair. They used to be decoded as
+        // R3 and L3, so pressing a trigger reported a thumbstick click while the
+        // real L3/R3 -- bits 6 and 7 -- were never read at all.
+        const SHOULDER: usize = 1 + 5;
+
+        let mut b = [0u8; 64];
+        b[0] = 0x01;
+        b[1] = 128;
+        b[2] = 128;
+        b[3] = 128;
+        b[4] = 128;
+        b[5] = 0x08;
+
+        b[SHOULDER] = 0x40;
+        let r = parse(&b).expect("should decode");
+        assert!(r.buttons.any(Buttons::L3), "bit 6 is L3");
+        assert!(!r.buttons.any(Buttons::R3 | Buttons::R2), "not bit 7 or 3");
+
+        b[SHOULDER] = 0x80;
+        let r = parse(&b).expect("should decode");
+        assert!(r.buttons.any(Buttons::R3), "bit 7 is R3");
+
+        b[SHOULDER] = 0x0C; // digital L2 and R2
+        let r = parse(&b).expect("should decode");
+        assert!(
+            !r.buttons.any(Buttons::L3 | Buttons::R3),
+            "bits 2 and 3 are the triggers, not the stick clicks"
+        );
+        assert!(r.buttons.any(Buttons::L2 | Buttons::R2));
     }
 
     #[test]

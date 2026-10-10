@@ -183,7 +183,8 @@ fn show(d: &Ds4Report) {
         d.touch.pad_touched, d.touch.x, d.touch.y
     );
     println!(
-        "      battery   {}/10  charging={}",
-        d.battery.level, d.battery.charging
+        "      battery   {:.0}%  charging={}",
+        d.battery.fraction() * 100.0,
+        d.battery.charging
     );
 }

@@ -86,7 +86,11 @@ fn main() {
                 "    gyro            : ({:.1}, {:.1}, {:.1}) deg/s",
                 s.report.gyro.yaw, s.report.gyro.pitch, s.report.gyro.roll
             );
-            println!("    battery reads   : {}", reader.battery_reads());
+            println!(
+                "    battery         : {:.0}%  charging={}",
+                s.report.battery.fraction() * 100.0,
+                s.report.battery.charging
+            );
 
             if s.packets < 100 {
                 println!("\n  the reader is alive but almost nothing is arriving, which is");

@@ -36,6 +36,12 @@ use crate::touchpad::{TouchpadMode, TouchpadProcessor};
 /// Telemetry publish rate. Faster than this and the UI cannot keep up anyway.
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(16);
 
+/// How the rumble test feels: both motors at full, for long enough to notice
+/// without being long enough to feel like something has hung.
+const TEST_RUMBLE_HEAVY: u8 = 255;
+const TEST_RUMBLE_FAST: u8 = 255;
+const TEST_RUMBLE_HOLD: Duration = Duration::from_millis(350);
+
 /// What the UI observes. Cheap to clone, sent roughly every frame.
 #[derive(Debug, Clone)]
 pub struct Telemetry {
@@ -63,6 +69,19 @@ pub struct Telemetry {
     pub pointer_delta: (i32, i32),
     /// Why pointer injection failed, if it did.
     pub pointer_error: Option<String>,
+    /// Why the pad refused the last output report, if it refused one. Cleared
+    /// by a write that goes through.
+    pub output_error: Option<String>,
+    /// Motors the output is being driven with, `(low, high)` in 0..=255.
+    ///
+    /// This is written by the notification a game's vibration arrives on, so it
+    /// is the one readout that proves the whole chain: a bar that never moves
+    /// while the test button is pressed means the request is not crossing the
+    /// virtual pad, and a bar that moves while the pad stays still means it is
+    /// not reaching the motors.
+    pub rumble: (u8, u8),
+    /// A self-test pulse is being driven through the chain right now.
+    pub rumble_test: bool,
     /// True when gyro is enabled in the active profile.
     pub gyro_enabled: bool,
     /// Flattened gyro smoothing parameters, so the UI does not have to re-derive
@@ -109,6 +128,9 @@ impl Default for Telemetry {
             gyro_delta: (0.0, 0.0),
             pointer_delta: (0, 0),
             pointer_error: None,
+            output_error: None,
+            rumble: (0, 0),
+            rumble_test: false,
             gyro_enabled: false,
             gyro_smoothing: GyroSmoothingParams {
                 kind: GyroSmoothingKind::None,
@@ -161,6 +183,8 @@ pub enum EngineCommand {
     ApplyHotkeys(Vec<HotkeyBinding>),
     /// Rebind the device watcher.
     ApplyDevice(DeviceSelection),
+    /// Vibrate the DualShock through the virtual pad, once.
+    TestRumble,
     /// Quit cleanly, unplugging the virtual pad.
     Shutdown,
 }
@@ -274,6 +298,14 @@ struct Engine {
     last_pointer: (i32, i32),
     /// A pointer injection that Windows refused, surfaced once in the UI.
     pointer_error: Option<String>,
+    /// The most recent output report the pad refused, as the reader reported
+    /// it. Kept so a message that has already been announced is not announced
+    /// again on every frame, and so a failure that clears can be seen to clear.
+    last_output_error: Option<String>,
+    /// Slots a rumble test is driving, and when to let go. Scheduled rather
+    /// than slept through, because sleeping here would stop the engine from
+    /// sending the vibration in the first place.
+    rumble_test: Option<(Vec<u8>, Instant)>,
     /// Current synthetic mouse button state, so each edge is sent once.
     mouse_left_down: bool,
     mouse_right_down: bool,
@@ -305,8 +337,15 @@ struct Engine {
     /// Copied out of the active profile so the lightbar pass does not have to
     /// re-resolve the link chain on every frame.
     active_lightbar: LightbarConfig,
-    /// Pending rumble command, consumed by the next output report.
-    rumble: Option<(u8, u8)>,
+    /// Motor state the game most recently asked for, as (heavy, fast).
+    ///
+    /// Read from the output backend every frame rather than queued, because a
+    /// game that stops vibrating sends an explicit zero and holding on to the
+    /// last nonzero value would leave the pad buzzing.
+    rumble_target: (u8, u8),
+    /// The motor state last confirmed delivered to the pad. `None` means the pad
+    /// has never been told anything, which is itself worth sending.
+    rumble_sent: Option<(u8, u8)>,
 
     events: std::sync::mpsc::SyncSender<EngineEvent>,
 }
@@ -337,6 +376,8 @@ impl Engine {
             touchpad_pointer: TouchpadPointer::new(profile.pointer),
             last_pointer: (0, 0),
             pointer_error: None,
+            last_output_error: None,
+            rumble_test: None,
             mouse_left_down: false,
             mouse_right_down: false,
             mouse_middle_down: false,
@@ -353,7 +394,8 @@ impl Engine {
             last_lightbar: [0, 0, 0],
             last_gyro_delta: (0.0, 0.0),
             active_lightbar: profile.lightbar,
-            rumble: None,
+            rumble_target: (0, 0),
+            rumble_sent: None,
             events,
         }
     }
@@ -385,6 +427,12 @@ impl Engine {
         if self.settings.output_mode == OutputMode::MonitorOnly {
             self.backend = Box::new(NullBackend::default());
         }
+
+        // A fresh backend has never been told anything, and the pad it drives
+        // may be a different one. Forgetting what was sent makes the next frame
+        // push the current state instead of assuming the new pad already knows.
+        self.rumble_target = (0, 0);
+        self.rumble_sent = None;
     }
 
     fn start_reader(&mut self) {
@@ -396,6 +444,11 @@ impl Engine {
             Ok(reader) => {
                 debug!(serial = ?wanted, rate, "watching for a pad");
                 self.reader = Some(reader);
+                // Whatever pad this opens has not been told anything yet: the
+                // lightbar colour and the Bluetooth rumble feature are both
+                // enabled by sending a report, so waiting for a change would
+                // leave both switched off after a reconnect.
+                self.rumble_sent = None;
             }
             Err(e) => self.emit(
                 EventLevel::Error,
@@ -573,8 +626,13 @@ impl Engine {
                 self.start_reader();
                 true
             }
+            EngineCommand::TestRumble => {
+                self.test_rumble();
+                true
+            }
             EngineCommand::Shutdown => {
                 // Release, then unplug, so nothing is left held down in a game.
+                self.stop_rumble_test();
                 self.backend.submit(GamepadState::neutral());
                 self.backend.shutdown();
                 // Also release synthetic mouse buttons: a stuck left button would
@@ -592,6 +650,13 @@ impl Engine {
         self.service_auto_profiles();
         self.lightbar_time += dt;
 
+        // The rumble test lets go on its own deadline, before anything that
+        // might return early: the pad has to be told to stop even when there is
+        // nothing connected to report on.
+        if self.rumble_test_due() {
+            self.stop_rumble_test();
+        }
+
         // Copy out what the reader knows before taking `&mut self`, so the
         // translation and lightbar passes can both mutate engine state.
         let (snap, calibration) = match self.reader.as_ref() {
@@ -604,7 +669,7 @@ impl Engine {
             store.active_profile().resolve(store).clone()
         };
 
-        self.drive_lightbar(&snap);
+        self.drive_output(&snap);
 
         let active = if snap.connected && !self.settings.paused {
             let state = self.translate(&snap.report, &profile, dt);
@@ -618,6 +683,23 @@ impl Engine {
 
         if self.last_publish.elapsed() >= PUBLISH_INTERVAL {
             self.last_publish = Instant::now();
+
+            // The reader does the writing, so this is the only place the engine
+            // finds out the pad turned a report down. Announced when the message
+            // changes rather than on every frame, and it clears itself once a
+            // write goes through again.
+            let output_error = self.reader.as_ref().and_then(DeviceReader::output_error);
+            if output_error != self.last_output_error {
+                if let Some(reason) = &output_error {
+                    warn!("the controller refused an output report: {reason}");
+                    self.emit(
+                        EventLevel::Warning,
+                        format!("The controller refused an output report: {reason}"),
+                    );
+                }
+                self.last_output_error = output_error;
+            }
+
             let telemetry = Telemetry {
                 connected: snap.connected,
                 device_label: snap.info.label(),
@@ -638,6 +720,9 @@ impl Engine {
                 gyro_delta: self.last_gyro_delta,
                 pointer_delta: self.last_pointer,
                 pointer_error: self.pointer_error.clone(),
+                output_error: self.last_output_error.clone(),
+                rumble: self.rumble_target,
+                rumble_test: self.rumble_test.is_some(),
                 gyro_enabled: profile.gyro.enabled,
                 gyro_smoothing: smoothing_params(&profile.gyro),
                 calibration,
@@ -889,11 +974,24 @@ impl Engine {
         }
     }
 
-    /// Queue a lightbar report, but only when the colour actually changed.
-    fn drive_lightbar(&mut self, snap: &DeviceSnapshot) {
+    /// Push a report to the pad when the lightbar or the motors have changed.
+    ///
+    /// Both halves go through here on purpose. Sending only on a colour change
+    /// would mean a rumble was written at the moment the lightbar last moved,
+    /// which with a static colour is never, and the motors would stay silent no
+    /// matter what the game asked for.
+    fn drive_output(&mut self, snap: &DeviceSnapshot) {
         let (Some(reader), true) = (self.reader.as_ref(), snap.connected) else {
             return;
         };
+
+        // Force feedback arrives from the virtual pad, not from the profile.
+        // Taken before the report is built so the newest vibration is in the
+        // frame that is about to go out rather than the one after it.
+        if let Some(motors) = self.backend.take_rumble() {
+            self.rumble_target = motors;
+        }
+
         let cfg = &self.active_lightbar;
         let colour = if cfg.enabled {
             let c = cfg
@@ -909,18 +1007,92 @@ impl Engine {
             [0, 0, 0]
         };
 
-        if colour == self.last_lightbar {
+        if !output_due(
+            &colour,
+            &self.last_lightbar,
+            self.rumble_target,
+            self.rumble_sent,
+        ) {
             return;
         }
+
+        // The current motors are passed every time rather than only when they
+        // change: an empty argument zeroes them, so a lightbar update on its own
+        // would stop whatever vibration was still running.
         let buf = report::output_report(
             snap.info.transport,
             colour[0],
             colour[1],
             colour[2],
-            self.rumble.take(),
+            Some(self.rumble_target),
         );
         if reader.send_output(&buf) {
             self.last_lightbar = colour;
+            self.rumble_sent = Some(self.rumble_target);
+        }
+    }
+
+    /// Vibrate the pad for a moment through the virtual controller.
+    ///
+    /// This leaves by the same door a game uses, so it crosses every link in
+    /// the chain: the virtual pad, the notification thread, the engine's output
+    /// pass, the report write, and the DualShock's motors. Rumble that is wired
+    /// but wrong fails somewhere along that path, and nothing else in the app
+    /// touches more than one link at a time.
+    fn test_rumble(&mut self) {
+        if !self.backend.is_connected() {
+            self.emit(
+                EventLevel::Warning,
+                "There is no virtual pad to test with yet.".into(),
+            );
+            return;
+        }
+
+        // Every connected pad is driven, because XInput will not say which one
+        // is ours. A second controller vibrating too is a smaller surprise than
+        // a test that silently missed.
+        let slots = crate::xinput::connected_slots();
+        if slots.is_empty() {
+            self.emit(
+                EventLevel::Warning,
+                "Windows reports no pad to vibrate.".into(),
+            );
+            return;
+        }
+
+        match crate::xinput::vibrate(&slots, TEST_RUMBLE_HEAVY, TEST_RUMBLE_FAST) {
+            Ok(_) => {
+                // The stop is scheduled rather than slept through: this thread
+                // is what turns a vibration into a report, so blocking it until
+                // the motors are due to stop would let the request to stop
+                // overwrite the request to start before it ever left.
+                self.rumble_test = Some((slots, Instant::now() + TEST_RUMBLE_HOLD));
+                self.emit(EventLevel::Info, "Vibrating.".into());
+            }
+            Err(e) => {
+                warn!("rumble test failed: {e}");
+                self.emit(
+                    EventLevel::Warning,
+                    format!("Could not vibrate the pad: {e}"),
+                );
+            }
+        }
+    }
+
+    /// Whether the scheduled rumble test has run its course.
+    fn rumble_test_due(&self) -> bool {
+        matches!(self.rumble_test, Some((_, until)) if Instant::now() >= until)
+    }
+
+    /// Stop whatever the rumble test started, if it started anything.
+    ///
+    /// Called on the way out as well as on the deadline, because the last report
+    /// written to the pad may have asked it to buzz and nothing else would
+    /// undo that: unplugging the virtual pad stops the game asking, it does not
+    /// tell the DualShock to stop.
+    fn stop_rumble_test(&mut self) {
+        if let Some((slots, _)) = self.rumble_test.take() {
+            let _ = crate::xinput::vibrate(&slots, 0, 0);
         }
     }
 
@@ -1156,6 +1328,22 @@ pub fn poll_threshold_fraction() -> f32 {
     STICK_EMULATION_THRESHOLD as f32 / i16::MAX as f32
 }
 
+/// Whether the pad needs an output report this frame.
+///
+/// Written as its own predicate because the bug it guards against is invisible
+/// from the outside: a lightbar that never changes colour means the condition
+/// for sending is never met, and the motors are then never written either. A
+/// pad that has not been told anything counts as due as well, which is what
+/// turns the report on after a reconnect instead of waiting for a change.
+fn output_due(
+    colour: &[u8; 3],
+    last_colour: &[u8; 3],
+    rumble: (u8, u8),
+    rumble_sent: Option<(u8, u8)>,
+) -> bool {
+    colour != last_colour || Some(rumble) != rumble_sent
+}
+
 /// Enumerate connected pads, without opening them.
 pub fn list_devices() -> Vec<crate::device::DeviceInfo> {
     device::enumerate()
@@ -1244,5 +1432,31 @@ mod tests {
         let mut bare = Profile::new();
         bare.mapping.clear();
         assert!(active_control_names(&report, &bare).is_empty());
+    }
+
+    #[test]
+    fn a_rumble_on_a_still_lightbar_is_due() {
+        let colour = [10, 20, 30];
+
+        // Nothing has been told anything yet, which is due whatever the
+        // colour. This is also what turns the lightbar and the Bluetooth rumble
+        // feature on after a reconnect.
+        assert!(output_due(&colour, &colour, (0, 0), None));
+
+        // Sent, and unchanged since: writing the same report every frame would
+        // be traffic for nothing.
+        assert!(!output_due(&colour, &colour, (0, 0), Some((0, 0))));
+
+        // The game started vibrating and the lightbar did not move. This is the
+        // case that used to send nothing at all, because the only condition
+        // checked was whether the colour had changed.
+        assert!(output_due(&colour, &colour, (255, 255), Some((0, 0))));
+
+        // And the game stopped: the silence has to be written too, or the pad
+        // carries on buzzing after the explosion is over.
+        assert!(output_due(&colour, &colour, (0, 0), Some((255, 255))));
+
+        // A colour change alone is still due.
+        assert!(output_due(&[1, 2, 3], &colour, (0, 0), Some((0, 0))));
     }
 }

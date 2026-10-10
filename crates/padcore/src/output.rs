@@ -122,6 +122,17 @@ pub trait OutputBackend: Send {
     fn submit(&mut self, state: GamepadState);
     /// Most recently published state, for the UI's output monitor.
     fn last_state(&self) -> GamepadState;
+    /// Force feedback the OS most recently asked for, or `None` if there is
+    /// nothing new.
+    ///
+    /// This is the only direction the virtual pad can speak in: a game sets the
+    /// motors through XInput, the driver passes it to the target, and without
+    /// something reading it here the value exists nowhere in the process. Taken
+    /// rather than polled because a vibration that stops is a real event too,
+    /// and holding on to it would leave the pad buzzing after the game stopped.
+    fn take_rumble(&mut self) -> Option<(u8, u8)> {
+        None
+    }
     /// Tear the virtual device down cleanly.
     fn shutdown(&mut self);
 }
@@ -173,6 +184,12 @@ mod vigem {
         connected: bool,
         last_error: Option<String>,
         last: GamepadState,
+        /// Latest motor state the game asked for, shared with the notification
+        /// thread. Written there, taken here, so neither side ever blocks the
+        /// other for longer than the lock.
+        feedback: Arc<parking_lot::Mutex<Option<(u8, u8)>>>,
+        /// The thread draining notifications. Joined once the target is gone.
+        notify: Option<std::thread::JoinHandle<()>>,
     }
 
     impl VigemBackend {
@@ -196,6 +213,8 @@ mod vigem {
                     connected: false,
                     last_error: Some(format!("{e:?}")),
                     last: GamepadState::neutral(),
+                    feedback: Arc::new(parking_lot::Mutex::new(None)),
+                    notify: None,
                 };
             }
 
@@ -203,12 +222,34 @@ mod vigem {
             // before the first report or the update races device startup.
             let _ = target.wait_ready();
 
+            let feedback = Arc::new(parking_lot::Mutex::new(None));
+            let notify = match target.request_notification() {
+                Ok(request) => {
+                    let slot = Arc::clone(&feedback);
+                    Some(request.spawn_thread(move |_request, data| {
+                        // XInput calls the low-frequency motor "large" and the
+                        // high-frequency one "small", while the DualShock report
+                        // wants them as (heavy, fast). They line up in that order.
+                        *slot.lock() = Some((data.large_motor, data.small_motor));
+                    }))
+                }
+                Err(e) => {
+                    // The pad still maps and the lightbar still works without
+                    // this, so the missing half is worth a warning, not a
+                    // disconnected backend.
+                    tracing::warn!("force feedback notifications unavailable: {e:?}");
+                    None
+                }
+            };
+
             Self {
                 _client: Some(client),
                 target: Some(target),
                 connected: true,
                 last_error: None,
                 last: GamepadState::neutral(),
+                feedback,
+                notify,
             }
         }
 
@@ -220,6 +261,8 @@ mod vigem {
                 connected: false,
                 last_error: Some(reason),
                 last: GamepadState::neutral(),
+                feedback: Arc::new(parking_lot::Mutex::new(None)),
+                notify: None,
             }
         }
 
@@ -270,11 +313,27 @@ mod vigem {
             self.last
         }
 
+        fn take_rumble(&mut self) -> Option<(u8, u8)> {
+            self.feedback.lock().take()
+        }
+
         fn shutdown(&mut self) {
             if let Some(mut t) = self.target.take() {
                 let _ = t.unplug();
             }
             self.connected = false;
+        }
+    }
+
+    impl Drop for VigemBackend {
+        fn drop(&mut self) {
+            // The notification thread only returns once its target is gone, so
+            // the target goes first. Joining while it is still alive would
+            // block here until a notification nobody is going to send arrives.
+            self.target = None;
+            if let Some(handle) = self.notify.take() {
+                let _ = handle.join();
+            }
         }
     }
 }

@@ -22,7 +22,10 @@ bytemuck.workspace = true
 hidapi = { version = "2.6", default-features = false, features = ["windows-native"] }
 
 [target.'cfg(windows)'.dependencies]
-vigem-client = "0.1"
+# The notification feature is what carries force feedback: without it ViGEmBus
+# accepts the virtual pad and never says what the game asked it to vibrate, so
+# there is nothing to forward to the DualShock.
+vigem-client = { version = "0.1", features = ["unstable_xtarget_notification"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -32,4 +35,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
+    # Drives the virtual pad the way a game would, which is the only way to ask
+    # for force feedback and the only way to prove rumble end to end.
+    "Win32_UI_Input_XboxController",
 ] }

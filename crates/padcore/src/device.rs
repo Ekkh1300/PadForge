@@ -32,13 +32,23 @@ pub struct DeviceInfo {
 
 impl DeviceInfo {
     /// Short label for the UI, disambiguating multiple pads.
+    ///
+    /// A pad on USB reports no serial of its own, and the placeholder it gives
+    /// instead is a run of zeroes; printing either would come out as
+    /// `Wireless Controller - ` with nothing after the dash, so both are
+    /// treated as "no serial".
     pub fn label(&self) -> String {
         let base = if self.product.trim().is_empty() {
             "DualShock 4".to_string()
         } else {
             self.product.trim().to_string()
         };
-        match self.serial.as_deref() {
+        let serial = self
+            .serial
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.chars().all(|c| c == '0' || c == ':'));
+        match serial {
             Some(s) if s.chars().count() >= 4 => {
                 let tail: String = s.chars().skip(s.chars().count() - 4).collect();
                 format!("{base} - {tail}")
@@ -227,6 +237,38 @@ impl Calibration {
     }
 }
 
+/// How writes to the pad are faring.
+///
+/// Output reports are sent on the reader thread, and for a long time the result
+/// of sending one was dropped on the floor. A pad that refuses a report then
+/// looks exactly like a pad that accepted it, which is how a wrong layout stays
+/// invisible: the write "succeeded" from the caller's side either way.
+#[derive(Default)]
+struct OutputHealth {
+    failures: AtomicU64,
+    last_error: Mutex<Option<String>>,
+}
+
+impl OutputHealth {
+    fn failed(&self, error: String) {
+        self.failures.fetch_add(1, Ordering::Relaxed);
+        *self.last_error.lock() = Some(error);
+    }
+
+    /// A write went through, so any earlier complaint no longer applies.
+    fn sent(&self) {
+        *self.last_error.lock() = None;
+    }
+
+    fn failures(&self) -> u64 {
+        self.failures.load(Ordering::Relaxed)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.last_error.lock().clone()
+    }
+}
+
 /// Handle to the running reader thread. Dropping it stops the thread.
 pub struct DeviceReader {
     stop: Arc<AtomicBool>,
@@ -234,7 +276,7 @@ pub struct DeviceReader {
     snapshot: Arc<Mutex<DeviceSnapshot>>,
     out_tx: Arc<Mutex<Option<Sender<Vec<u8>>>>>,
     calibration: Arc<Mutex<Calibration>>,
-    battery_reads: Arc<AtomicU64>,
+    output: Arc<OutputHealth>,
 }
 
 impl DeviceReader {
@@ -246,7 +288,7 @@ impl DeviceReader {
         let api = Arc::new(hidapi::HidApi::new()?);
         let snapshot = Arc::new(Mutex::new(DeviceSnapshot::empty()));
         let calibration = Arc::new(Mutex::new(Calibration::default()));
-        let battery_reads = Arc::new(AtomicU64::new(0));
+        let output = Arc::new(OutputHealth::default());
         let out_tx: Arc<Mutex<Option<Sender<Vec<u8>>>>> = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -256,7 +298,7 @@ impl DeviceReader {
                 let stop = Arc::clone(&stop);
                 let snapshot = Arc::clone(&snapshot);
                 let calibration = Arc::clone(&calibration);
-                let battery_reads = Arc::clone(&battery_reads);
+                let output = Arc::clone(&output);
                 let out_tx = Arc::clone(&out_tx);
                 move || {
                     run(
@@ -266,8 +308,8 @@ impl DeviceReader {
                         stop,
                         snapshot,
                         calibration,
-                        battery_reads,
                         out_tx,
+                        output,
                     )
                 }
             })?;
@@ -278,7 +320,7 @@ impl DeviceReader {
             snapshot,
             out_tx,
             calibration,
-            battery_reads,
+            output,
         })
     }
 
@@ -308,9 +350,16 @@ impl DeviceReader {
         *self.calibration.lock() = Calibration::default();
     }
 
-    /// Number of battery feature reads performed, useful for diagnostics.
-    pub fn battery_reads(&self) -> u64 {
-        self.battery_reads.load(Ordering::Relaxed)
+    /// Reports the pad refused, if the last write failed. Cleared by a write
+    /// that goes through, so a transient rejection does not linger as a
+    /// permanent accusation.
+    pub fn output_error(&self) -> Option<String> {
+        self.output.last_error()
+    }
+
+    /// How many reports the pad has refused since the reader started.
+    pub fn output_failures(&self) -> u64 {
+        self.output.failures()
     }
 }
 
@@ -323,8 +372,6 @@ impl Drop for DeviceReader {
     }
 }
 
-/// How often to poll for battery while a pad is idle.
-const BATTERY_INTERVAL: Duration = Duration::from_secs(30);
 /// How often to re-scan the bus while no pad is present.
 const RESCAN_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -343,12 +390,22 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// turn and the loop spins.
 const READ_TIMEOUT_MS: i32 = 50;
 
+/// Attempts made at writing one output report before the refusal is kept.
+///
+/// More than one because a rejection here is usually the pad being momentarily
+/// unavailable rather than the report being wrong, and fewer than the retry
+/// would matter would mean reporting every one of those.
+const OUTPUT_ATTEMPTS: u32 = 3;
+
+/// Pause between write attempts. Long enough for the pad to finish what it was
+/// doing, short enough that a genuine failure is still visible within a frame.
+const OUTPUT_RETRY_BACKOFF: Duration = Duration::from_millis(4);
+
 /// How long the pad may go without delivering a frame before it is treated as
 /// disconnected.
 ///
-/// Far longer than the gap between reports at any supported rate, and longer
-/// than the battery poll interval, because a pad that has gone quiet for this
-/// long is not coming back on its own.
+/// Far longer than the gap between reports at any supported rate, because a
+/// pad that has gone quiet for this long is not coming back on its own.
 const STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Choose the interface that actually delivers reports.
@@ -451,8 +508,8 @@ fn run(
     stop: Arc<AtomicBool>,
     snapshot: Arc<Mutex<DeviceSnapshot>>,
     calibration: Arc<Mutex<Calibration>>,
-    battery_reads: Arc<AtomicU64>,
     out_tx: Arc<Mutex<Option<Sender<Vec<u8>>>>>,
+    output: Arc<OutputHealth>,
 ) {
     let idle_backoff = interval_for_rate(poll_rate_hz);
 
@@ -532,16 +589,14 @@ fn run(
 
         let mut buf = [0u8; 128];
         let mut last_frame = Instant::now();
-        let mut last_battery = Instant::now();
         let mut dead = false;
         // When the pad last actually delivered a frame. A read timeout returning
         // nothing is not itself a disconnect: at 1000 Hz a gap of a few hundred
-        // milliseconds is normal, and the battery poll deliberately goes quiet
-        // for seconds at a time.
+        // milliseconds is normal.
         let mut last_report = Instant::now();
 
         while !stop.load(Ordering::Relaxed) && !dead {
-            service_output(&device, &rx);
+            service_output(&device, &rx, &output);
 
             // A timeout, not a blocking read. Two reasons, both learned the hard
             // way: a silent interface blocks forever, and a pad that goes to
@@ -592,15 +647,6 @@ fn run(
                             calibration.lock().accumulate(&s.report);
                         }
                     }
-
-                    if last_battery.elapsed() > BATTERY_INTERVAL {
-                        last_battery = now;
-                        battery_reads.fetch_add(1, Ordering::Relaxed);
-                        if let Some(level) = read_battery(&device) {
-                            let mut s = snapshot.lock();
-                            report::apply_battery(&mut s.report, level);
-                        }
-                    }
                 }
                 Err(hidapi::HidError::IoError { .. })
                 | Err(hidapi::HidError::HidApiError { .. }) => {
@@ -638,22 +684,44 @@ pub fn enumerate() -> Vec<DeviceInfo> {
         .collect()
 }
 
-/// Ask the pad for its battery level via feature report `0x81`.
-fn read_battery(device: &hidapi::HidDevice) -> Option<u8> {
-    let mut buf = [0u8; 64];
-    buf[0] = 0x81;
-    device.get_feature_report(&mut buf).ok()?;
-    // Byte 0 is the report id, byte 1 padding, byte 2 the status nibble.
-    buf.get(2).copied()
-}
-
-fn service_output(device: &hidapi::HidDevice, rx: &Receiver<Vec<u8>>) {
+/// Write queued reports to the pad, and report the ones it refuses.
+///
+/// A rejected write used to be dropped here, which is the worst possible place
+/// for it: the caller has already been told the report was queued, so a pad
+/// that refuses everything looks exactly like a pad that is accepting
+/// everything. Now the result decides whether the complaint clears or is kept.
+///
+/// Each write is attempted a few times before it counts. The pad turns down
+/// output while it is waking over Bluetooth, and a single rejection is not
+/// worth putting a warning on screen for; the one that keeps failing is, and
+/// that is what `health` holds on to.
+fn service_output(device: &hidapi::HidDevice, rx: &Receiver<Vec<u8>>, health: &OutputHealth) {
     loop {
-        match rx.try_recv() {
-            Ok(buf) => {
-                let _ = device.send_output_report(&buf);
-            }
+        let buf = match rx.try_recv() {
+            Ok(buf) => buf,
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => return,
+        };
+
+        let mut failure: Option<String> = None;
+        for attempt in 1..=OUTPUT_ATTEMPTS {
+            match device.send_output_report(&buf) {
+                Ok(()) => {
+                    health.sent();
+                    failure = None;
+                    break;
+                }
+                Err(e) => {
+                    failure = Some(e.to_string());
+                    if attempt < OUTPUT_ATTEMPTS {
+                        std::thread::sleep(OUTPUT_RETRY_BACKOFF);
+                    }
+                }
+            }
+        }
+
+        if let Some(message) = failure {
+            warn!("the pad refused an output report: {message}");
+            health.failed(message);
         }
     }
 }
@@ -737,6 +805,33 @@ fn interface_rank(interface_number: i32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Output reports are written on the reader thread and their result used to
+    /// be dropped, which meant a pad refusing everything looked exactly like a
+    /// pad accepting everything. These are the two halves of that: the refusal
+    /// is kept, and a write that later goes through clears it.
+    #[test]
+    fn a_refused_report_is_kept_and_a_good_one_clears_it() {
+        let health = OutputHealth::default();
+        assert_eq!(health.failures(), 0);
+        assert_eq!(health.last_error(), None);
+
+        health.failed("Access denied".into());
+        assert_eq!(health.failures(), 1);
+        assert_eq!(health.last_error().as_deref(), Some("Access denied"));
+
+        // A second refusal replaces the message rather than appending, so what
+        // the UI shows is what is wrong now, not a history of what went wrong.
+        health.failed("Device removed".into());
+        assert_eq!(health.failures(), 2);
+        assert_eq!(health.last_error().as_deref(), Some("Device removed"));
+
+        // One good write is enough to stop complaining: the count stays as a
+        // diagnostic, the message does not stay as an accusation.
+        health.sent();
+        assert_eq!(health.last_error(), None);
+        assert_eq!(health.failures(), 2);
+    }
 
     /// Measured on a real DS4 v2: interface 3 opens successfully and then never
     /// returns from read, while interface -1 delivers every frame. Taking the

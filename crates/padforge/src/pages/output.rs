@@ -88,6 +88,32 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
         ui.add_space(SPACE_MD);
         divider(ui);
         ui.add_space(SPACE_MD);
+        ui.label(
+            RichText::new("FORCE FEEDBACK")
+                .color(TEXT_FAINT)
+                .size(11.0)
+                .strong(),
+        );
+        ui.add_space(SPACE_XS);
+        // Vibration is the one thing the UI cannot show, and for a long time it
+        // was also the one thing nothing in the app proved. Driving it by hand
+        // uses the same route a game does, so a rumble that is wired but wrong
+        // fails here rather than in a match nobody can pause.
+        if secondary_button(ui, "Test vibration").clicked() {
+            ctx.engine.send(EngineCommand::TestRumble);
+        }
+        ui.label(
+            RichText::new(
+                "Vibrates the controller for a moment through the path a game uses, \
+                 so what you feel is what a game would feel.",
+            )
+            .color(TEXT_FAINT)
+            .size(11.5),
+        );
+
+        ui.add_space(SPACE_MD);
+        divider(ui);
+        ui.add_space(SPACE_MD);
         ui.label(RichText::new("MODE").color(TEXT_FAINT).size(11.0).strong());
         ui.add_space(SPACE_XS);
         let current = ctx.state.settings.output_mode;

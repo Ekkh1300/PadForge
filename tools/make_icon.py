@@ -1,9 +1,15 @@
 """Generates PadForge's application icon.
 
-The mark is a DualShock 4 pad seen from the front, drawn small: at 16 px in a
-title bar almost nothing survives, so the silhouette has to do the work. The
-body is a rounded rectangle, the touchpad a lighter inset, and the sticks and
-buttons just enough to read as a controller rather than a plain tile.
+The mark is the one the app draws for its own window: two rings on a dark
+rounded square. It is generated here rather than shipped as an image so that the
+artwork is not checked in as an opaque blob nobody can edit, and so that the
+same shapes appear on the title bar, the tray, the desktop shortcut, the Start
+Menu, the installer and the file's properties dialog.
+
+Keeping it to two rings is a decision about size, not about taste. At 16 px a
+detailed drawing loses its details and keeps only its noise, while two
+concentric circles and a corner radius still read as a deliberate shape. That is
+why the mark is drawn with primitives rather than as a small illustration.
 
 Standard library only. This runs in CI to prove the committed .ico matches, and
 requiring Pillow there would mean either installing it on every runner or
@@ -26,15 +32,22 @@ OUT = os.path.join(HERE, "padforge.ico")
 SIZES = [16, 20, 24, 32, 48, 64, 128, 256]
 
 # The application's own palette, so the icon and the window agree.
-BODY_TOP = (58, 66, 82)
-BODY_BOTTOM = (34, 39, 50)
-EDGE = (86, 97, 120)
-TOUCHPAD = (48, 55, 70)
-TOUCHPAD_EDGE = (72, 82, 102)
-STICK = (24, 28, 36)
-STICK_RING = (108, 122, 148)
-LIGHTBAR = (86, 182, 255)
-D_PAD = (74, 84, 104)
+#
+# These are the exact values `icons.rs` paints at runtime, and the accent is the
+# same one `theme.rs` uses for every highlighted control. If the two ever drift,
+# the icon and the window stop looking like the same program, which is the bug
+# this file exists to prevent.
+SQUARE = (0x12, 0x15, 0x1B)
+ACCENT = (0x35, 0xD0, 0xE8)
+
+# Geometry, as fractions of the canvas. These match the runtime mark exactly:
+# the outer ring guided by a circle at 0.30 of the size, the inner at 0.14, each
+# 0.055 of the size thick, on a square inset by 0.04 with a 0.22 corner radius.
+SQUARE_INSET = 0.04
+CORNER_RADIUS = 0.22
+RING_OUTER = 0.30
+RING_INNER = 0.14
+RING_THICKNESS = 0.055
 
 SS = 4  # supersample factor
 
@@ -73,23 +86,6 @@ class Canvas:
                     continue
                 self.blend(x, y, colour)
 
-    def stroke_round(self, x0, y0, x1, y1, colour, radius, width):
-        """Draw a rounded outline by filling the shape and punching out the
-        interior. Punching rather than tracing keeps this to one primitive."""
-        outer = Canvas(self.w, self.h)
-        outer.fill_rect(x0, y0, x1, y1, colour, radius=radius)
-
-        inner = Canvas(self.w, self.h)
-        ix0, iy0 = x0 + width, y0 + width
-        ix1, iy1 = x1 - width, y1 - width
-        if ix1 > ix0 and iy1 > iy0:
-            inner.fill_rect(ix0, iy0, ix1, iy1, (0, 0, 0), radius=max(0, radius - width))
-
-        for i in range(self.w * self.h):
-            o = i * 4
-            if outer.px[o + 3] and not inner.px[o + 3]:
-                self.blend(i % self.w, i // self.w, outer.px[o : o + 3])
-
     def fill_ellipse(self, cx, cy, rx, ry, colour):
         for y in range(max(0, int(cy - ry)), min(self.h, int(cy + ry) + 1)):
             for x in range(max(0, int(cx - rx)), min(self.w, int(cx + rx) + 1)):
@@ -97,26 +93,6 @@ class Canvas:
                 dy = (y + 0.5 - cy) / ry
                 if dx * dx + dy * dy <= 1.0:
                     self.blend(x, y, colour)
-
-    def stroke_ellipse(self, cx, cy, rx, ry, colour, width):
-        outer = Canvas(self.w, self.h)
-        outer.fill_ellipse(cx, cy, rx, ry, colour)
-        inner = Canvas(self.w, self.h)
-        inner.fill_ellipse(cx, cy, max(0.1, rx - width), max(0.1, ry - width), (0, 0, 0))
-        for i in range(self.w * self.h):
-            o = i * 4
-            if outer.px[o + 3] and not inner.px[o + 3]:
-                self.blend(i % self.w, i // self.w, outer.px[o : o + 3])
-
-    def line(self, x0, y0, x1, y1, colour, width=1):
-        """A thick line, drawn by stamping a square brush along the span."""
-        steps = int(max(abs(x1 - x0), abs(y1 - y0)) * 2) + 1
-        for s in range(steps + 1):
-            t = s / steps
-            x = x0 + (x1 - x0) * t
-            y = y0 + (y1 - y0) * t
-            half = width / 2
-            self.fill_rect(x - half, y - half, x + half + 1, y + half + 1, colour)
 
     def _inside_round(self, px, py, x0, y0, x1, y1, radius):
         """Point-in-rounded-rectangle test, with the corners treated as circles."""
@@ -163,77 +139,64 @@ class Canvas:
         return bytes(out)
 
 
-def lerp(a, b, t):
-    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+def draw_mark(size):
+    """Draw the mark at `size` px square, supersampled then downsampled.
 
-
-def draw_pad(size):
-    """Draw the mark at `size` px square, supersampled then downsampled."""
+    The supersampling matters most here: without it a ring 3 px wide grows a
+    visible stair-step at the diagonal, and the corner radius of the square ends
+    up as a single chipped pixel at 16 px.
+    """
     s = size * SS
     c = Canvas(s, s)
+    inset = s * SQUARE_INSET
+    low, high = inset, s - inset
+    radius = s * CORNER_RADIUS
 
-    def u(v):
-        return v * s
+    for y in range(s):
+        for x in range(s):
+            if inside_round(x + 0.5, y + 0.5, low, low, high, high, radius):
+                c.blend(x, y, SQUARE)
 
-    # A controller is wider than tall, so the canvas keeps a margin on the sides.
-    pad_w = u(0.86)
-    pad_h = u(0.94)
-    left = (s - pad_w) / 2
-    top = (s - pad_h) / 2
-    radius = pad_w * 0.22
-
-    # Body, with a vertical gradient so the shell reads as lit from above rather
-    # than as a flat grey blob at every size.
-    grad = Canvas(s, s)
-    for y in range(int(top), int(top + pad_h) + 1):
-        t = (y - top) / pad_h
-        grad.fill_rect(left, y, left + pad_w, y + 1, lerp(BODY_TOP, BODY_BOTTOM, t))
-    # Clip the gradient to the rounded silhouette.
-    mask = Canvas(s, s)
-    mask.fill_rect(left, top, left + pad_w, top + pad_h, (255, 255, 255), radius=radius)
-    for i in range(s * s):
-        if not mask.px[i * 4 + 3]:
-            grad.px[i * 4 + 3] = 0
-    c.px[:] = grad.px
-
-    c.stroke_round(left, top, left + pad_w, top + pad_h, EDGE, radius, SS * 0.9)
-
-    # Touchpad.
-    tp_w = pad_w * 0.40
-    tp_h = pad_h * 0.34
-    tp_left = left + (pad_w - tp_w) / 2
-    tp_top = top + pad_h * 0.075
-    c.fill_rect(tp_left, tp_top, tp_left + tp_w, tp_top + tp_h, TOUCHPAD, radius=tp_w * 0.14)
-    c.stroke_round(tp_left, tp_top, tp_left + tp_w, tp_top + tp_h, TOUCHPAD_EDGE, tp_w * 0.14, SS * 0.7)
-
-    # Lightbar: the one saturated element, where the real one sits.
-    bar_w = pad_w * 0.30
-    bar_h = max(SS * 1.2, pad_h * 0.035)
-    bar_left = left + (pad_w - bar_w) / 2
-    bar_top = top + pad_h * 0.505
-    c.fill_rect(bar_left, bar_top, bar_left + bar_w, bar_top + bar_h, LIGHTBAR, radius=bar_h / 2)
-
-    # Sticks.
-    stick_r = pad_w * 0.085
-    stick_cy = top + pad_h * 0.655
-    for cx in (left + pad_w * 0.29, left + pad_w * 0.71):
-        c.fill_ellipse(cx, stick_cy, stick_r, stick_r, STICK)
-        c.stroke_ellipse(cx, stick_cy, stick_r, stick_r, STICK_RING, SS * 0.7)
-
-    # Face buttons. Below 32 px four separate circles turn to mush, so a single
-    # bar stands in: it still reads as "buttons here" and survives the downscale.
-    if size >= 32:
-        face_r = pad_w * 0.052
-        fcx = left + pad_w * 0.855
-        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
-            c.fill_ellipse(fcx + dx * face_r * 2.0, stick_cy + dy * face_r * 2.0, face_r, face_r, D_PAD)
-    else:
-        bw = pad_w * 0.10
-        bh = pad_h * 0.13
-        bx = left + pad_w * 0.80
-        c.fill_rect(bx - bw, stick_cy - bh, bx + bw, stick_cy + bh, D_PAD, radius=bw * 0.4)
+    # Two rings, drawn as a filled disc minus a smaller one. Painting the disc
+    # and then erasing its middle keeps this to the two primitives the canvas
+    # already has. The stroke is centred on the radius, exactly as the window
+    # measures it (`|d - radius| <= thickness / 2`), so a ring sits half its
+    # width either side of the guide circle instead of hanging inside it.
+    cx = cy = s / 2.0
+    thickness = max(s * RING_THICKNESS, SS)
+    for fraction in (RING_OUTER, RING_INNER):
+        radius_px = s * fraction
+        outer = Canvas(s, s)
+        outer.fill_ellipse(cx, cy, radius_px + thickness / 2, radius_px + thickness / 2, ACCENT)
+        inner = Canvas(s, s)
+        inner.fill_ellipse(
+            cx,
+            cy,
+            max(0.1, radius_px - thickness / 2),
+            max(0.1, radius_px - thickness / 2),
+            (0, 0, 0),
+        )
+        for i in range(s * s):
+            o = i * 4
+            # Only where the square already painted, so a ring never spills past
+            # the corner radius -- and written straight through rather than
+            # composited. Compositing averages the ring with the square beneath
+            # it, which lands on a dull teal instead of the accent, and a second
+            # pass halves it again. The window draws the accent at full strength,
+            # so anything less here is a different icon wearing the same shapes.
+            if outer.px[o + 3] and not inner.px[o + 3] and c.px[o + 3]:
+                c.px[o : o + 3] = outer.px[o : o + 3]
 
     return c.downsample(SS)
+
+
+def inside_round(px, py, x0, y0, x1, y1, radius):
+    """Point-in-rounded-rectangle test, with the corners treated as circles."""
+    cx = min(max(px, x0 + radius), x1 - radius)
+    cy = min(max(py, y0 + radius), y1 - radius)
+    dx = px - cx
+    dy = py - cy
+    return dx * dx + dy * dy <= radius * radius
 
 
 def bmp_bytes(img):
@@ -315,7 +278,7 @@ def verify(data, expected):
 
 
 def main():
-    frames = [draw_pad(s) for s in SIZES]
+    frames = [draw_mark(s) for s in SIZES]
     data = build_ico(frames)
 
     print(f"wrote {OUT} ({len(data)} bytes)")

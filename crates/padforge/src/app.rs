@@ -206,7 +206,11 @@ impl eframe::App for App {
         }
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    /// Called when the window closes.
+    ///
+    /// `eframe` used to hand the OpenGL context to this hook; it no longer
+    /// passes anything, so the work is simply to save and let go of the engine.
+    fn on_exit(&mut self) {
         // Make sure nothing is left held down in a game.
         self.state.settings.save().ok();
         self.state.store.save().ok();

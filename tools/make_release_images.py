@@ -16,7 +16,7 @@ import zlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from make_icon import SS, Canvas, draw_pad  # noqa: E402
+from make_icon import SS, Canvas, draw_mark  # noqa: E402
 
 DOCS = os.path.join(HERE, "..", "docs")
 
@@ -114,7 +114,7 @@ def main():
 
     # The GitHub avatar and release header.
     for size in (128, 512):
-        img = draw_pad(size)
+        img = draw_mark(size)
         path = os.path.join(DOCS, f"icon-{size}.png")
         write_png(path, size, size, to_rgba(img))
         written.append(path)
@@ -135,7 +135,7 @@ def main():
             sheet.px[i : i + 4] = bytes((0x60, 0x64, 0x6C, 255))
 
     for i, size in enumerate(sizes):
-        icon = draw_pad(size)
+        icon = draw_mark(size)
         x = pad + i * cell
         # Top row: at real size, which is what Windows actually draws.
         composite(sheet, icon, x, pad)
