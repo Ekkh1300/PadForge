@@ -4,7 +4,7 @@ use crate::theme::*;
 use crate::widgets;
 use egui::{RichText, Stroke};
 use padcore::engine::EngineCommand;
-use padcore::settings::OutputMode;
+use padcore::settings::{OutputMode, SlotChoice};
 
 #[allow(clippy::too_many_lines)]
 pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
@@ -106,6 +106,87 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
             RichText::new(
                 "Vibrates the controller for a moment through the path a game uses, \
                  so what you feel is what a game would feel.",
+            )
+            .color(TEXT_FAINT)
+            .size(11.5),
+        );
+
+        ui.add_space(SPACE_MD);
+        divider(ui);
+        ui.add_space(SPACE_MD);
+        // A virtual pad is anonymous without this: two pads on one machine look
+        // identical in a game's controller list, and a split-screen game asks
+        // for a player rather than a device. The slot is shown from what the
+        // driver reported, not from what was asked for, because a request that
+        // lost a race is answered by landing somewhere else.
+        ui.label(
+            RichText::new("VIRTUAL SLOT")
+                .color(TEXT_FAINT)
+                .size(11.0)
+                .strong(),
+        );
+        ui.add_space(SPACE_XS);
+        // The landed slot and the requested one are shown separately on
+        // purpose. A request can be refused — a player already taken by another
+        // controller leaves this pad where it was — and reporting only where it
+        // ended up would read as though the choice had been accepted.
+        let asked = ctx.state.settings.virtual_slot.player_no();
+        let landed = t.output_slot.map(|s| s as usize + 1);
+        let refused = matches!((asked, landed), (Some(a), Some(l)) if a != l);
+        let (line, colour) = match (landed, refused) {
+            (Some(l), false) => (format!("This pad is Player {l} right now."), TEXT),
+            (Some(l), true) => (
+                match asked {
+                    Some(a) => format!("Player {a} is taken, so this pad became Player {l}."),
+                    None => format!("This pad is Player {l} right now."),
+                },
+                DANGER,
+            ),
+            (None, _) => (
+                "The driver has not reported which player this pad is.".to_string(),
+                TEXT_FAINT,
+            ),
+        };
+        ui.label(RichText::new(line).color(colour).size(12.0));
+        ui.add_space(SPACE_XS);
+        let mut slot = ctx.state.settings.virtual_slot;
+        ui.horizontal(|ui| {
+            for choice in SlotChoice::ALL {
+                let selected = slot == choice;
+                let btn = egui::Button::new(
+                    RichText::new(choice.label())
+                        .color(if selected { BACKDROP } else { TEXT })
+                        .size(12.5),
+                )
+                .fill(if selected { ACCENT } else { SURFACE_RAISED })
+                .stroke(Stroke::new(1.0, if selected { ACCENT } else { BORDER }))
+                .corner_radius(RADIUS_SM);
+                if ui.add(btn).clicked() {
+                    slot = choice;
+                }
+            }
+        });
+        if slot != ctx.state.settings.virtual_slot {
+            ctx.state.settings.virtual_slot = slot;
+            let settings = ctx.state.settings.clone();
+            ctx.state.settings_dirty = true;
+            ctx.engine
+                .send(EngineCommand::ApplySettings(Box::new(settings)));
+            ctx.state.toast(
+                match slot {
+                    // Not the slot, which may well be refused; the request is
+                    // what is being confirmed here.
+                    SlotChoice::Auto => "Slot: automatic".into(),
+                    SlotChoice::Player(i) => format!("Asking for Player {}", i + 1),
+                },
+                ToastLevel::Info,
+            );
+        }
+        ui.label(
+            RichText::new(
+                "Games see the pad as this player. If the slot is already taken the \
+                 pad appears as the next free one, and the line above says where it \
+                 ended up.",
             )
             .color(TEXT_FAINT)
             .size(11.5),

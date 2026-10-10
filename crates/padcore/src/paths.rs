@@ -58,9 +58,17 @@ pub fn ensure_dir(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 /// Read + parse a JSON file, returning `None` on any failure.
+///
+/// A leading byte order mark is stripped first. Windows editors leave one
+/// behind — Notepad always does, and so does PowerShell's `Set-Content` — and
+/// `serde_json` will not skip it, so the parse fails and `None` sends the app
+/// back to defaults. A user who hand-edits their settings loses every setting
+/// with no warning at all, and the file they wrote is still on disk looking
+/// perfectly fine, which makes it the worst kind of failure to have.
 pub fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
     let raw = std::fs::read_to_string(path).ok()?;
-    match serde_json::from_str(&raw) {
+    let body = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+    match serde_json::from_str(body) {
         Ok(v) => Some(v),
         Err(e) => {
             tracing::warn!(?path, %e, "could not parse json, falling back to defaults");
@@ -87,5 +95,42 @@ pub fn write_json<T: serde::Serialize>(path: &std::path::Path, value: &T) -> std
             let _ = std::fs::remove_file(&tmp);
             Err(e).or(Ok(()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A settings file that a Windows editor has touched.
+    ///
+    /// Notepad writes a byte order mark by default and so does PowerShell's
+    /// `Set-Content`, so this is not an exotic state: it is what happens the
+    /// first time anybody hand-edits their configuration. Losing every setting
+    /// over it, silently, is the worst kind of failure — the file on disk still
+    /// looks perfectly fine.
+    #[test]
+    fn a_byte_order_mark_does_not_reset_the_settings() {
+        #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+        struct Small {
+            rate: u32,
+        }
+
+        let dir = std::env::temp_dir().join(format!("padforge-bom-{}", std::process::id()));
+        ensure_dir(&dir).expect("temp dir");
+        let path = dir.join("settings.json");
+
+        std::fs::write(&path, "\u{feff}{\"rate\":250}").expect("write bom file");
+        let with_bom: Option<Small> = read_json(&path);
+        assert_eq!(with_bom, Some(Small { rate: 250 }));
+
+        // And a file without one still reads, so stripping has not become a new
+        // way to break the ordinary case.
+        std::fs::write(&path, "{\"rate\":500}").expect("write plain file");
+        let plain: Option<Small> = read_json(&path);
+        assert_eq!(plain, Some(Small { rate: 500 }));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

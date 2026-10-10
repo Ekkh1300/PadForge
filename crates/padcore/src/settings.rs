@@ -41,11 +41,72 @@ impl DeviceSelection {
 /// Polling rate presets, in Hz. Higher means lower latency and more CPU.
 pub const POLL_RATES: &[u32] = &[125, 250, 500, 1000];
 
+/// The four slots Windows gives to XInput.
+///
+/// These are not a range to be argued with: XInput addresses a controller by a
+/// number from 0 to 3 and refuses to talk about any other, so a virtual pad
+/// placed outside them would be invisible to every game. The count is named
+/// because the choice control and the reporting both need to agree on it.
+pub const SLOT_COUNT: usize = 4;
+
+/// Which XInput controller the virtual pad is published as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SlotChoice {
+    /// Take whichever free slot the driver has, which is the usual case and the
+    /// only choice when there is nothing else to disagree with.
+    #[default]
+    Auto,
+    /// Ask for a specific player, so two machines or two profiles can be told
+    /// apart without looking at which slot happened to be free.
+    ///
+    /// A request is honoured when the slot is free and ignored when it is not.
+    /// Claiming it would mean unplugging a controller somebody else is already
+    /// using, and a controller that vanishes mid-game is a worse outcome than
+    /// a preference that quietly did not apply.
+    Player(usize),
+}
+
+impl SlotChoice {
+    /// The requested slot, or `None` for "whatever is free".
+    pub fn index(self) -> Option<usize> {
+        match self {
+            SlotChoice::Auto => None,
+            SlotChoice::Player(i) => Some(i),
+        }
+    }
+
+    /// One-based player number, for display. `None` for [`SlotChoice::Auto`],
+    /// which has no player to number.
+    pub fn player_no(self) -> Option<usize> {
+        self.index().map(|i| i + 1)
+    }
+
+    /// Every choice the UI can offer, in display order.
+    pub const ALL: [SlotChoice; SLOT_COUNT + 1] = [
+        SlotChoice::Auto,
+        SlotChoice::Player(0),
+        SlotChoice::Player(1),
+        SlotChoice::Player(2),
+        SlotChoice::Player(3),
+    ];
+
+    /// The label shown on the choice control.
+    pub fn label(self) -> String {
+        match self {
+            SlotChoice::Auto => "Automatic".into(),
+            SlotChoice::Player(i) => format!("Player {}", i + 1),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub device: DeviceSelection,
     pub poll_rate_hz: u32,
     pub output_mode: OutputMode,
+    /// Which XInput controller the virtual pad is published as.
+    pub virtual_slot: SlotChoice,
 
     /// Stop publishing reports without unloading anything.
     pub paused: bool,
@@ -80,6 +141,7 @@ impl Default for Settings {
             device: DeviceSelection::Auto,
             poll_rate_hz: 250,
             output_mode: OutputMode::Xbox360,
+            virtual_slot: SlotChoice::Auto,
             paused: false,
             start_minimized: false,
             minimize_on_close: true,
@@ -102,6 +164,12 @@ impl Settings {
         }
         self.auto_profile_interval_ms = self.auto_profile_interval_ms.clamp(100, 10_000);
         self.battery_interval_secs = self.battery_interval_secs.clamp(5, 3600);
+        // XInput only has four slots. A settings file naming a fifth would ask
+        // for something no driver can hand out, so it falls back to taking
+        // whatever is free rather than failing to attach at all.
+        if matches!(self.virtual_slot, SlotChoice::Player(i) if i >= SLOT_COUNT) {
+            self.virtual_slot = SlotChoice::Auto;
+        }
         self
     }
 
@@ -299,6 +367,50 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn sanitise_rejects_a_slot_outside_xinput() {
+        for i in SLOT_COUNT..12 {
+            let s = Settings {
+                virtual_slot: SlotChoice::Player(i),
+                ..Default::default()
+            }
+            .sanitised();
+            assert_eq!(
+                s.virtual_slot,
+                SlotChoice::Auto,
+                "player {i} does not exist"
+            );
+        }
+
+        // The four that do exist are left alone.
+        for i in 0..SLOT_COUNT {
+            let s = Settings {
+                virtual_slot: SlotChoice::Player(i),
+                ..Default::default()
+            }
+            .sanitised();
+            assert_eq!(s.virtual_slot, SlotChoice::Player(i));
+        }
+    }
+
+    #[test]
+    fn slot_numbers_are_one_based_everywhere_they_are_shown() {
+        let s = Settings {
+            virtual_slot: SlotChoice::Player(0),
+            ..Default::default()
+        }
+        .sanitised();
+        assert_eq!(s.virtual_slot.player_no(), Some(1));
+        assert_eq!(s.virtual_slot.label(), "Player 1");
+
+        assert_eq!(SlotChoice::Player(3).label(), "Player 4");
+        assert_eq!(SlotChoice::Player(3).player_no(), Some(4));
+        // Automatic has no player to number, and must not claim one.
+        assert_eq!(SlotChoice::Auto.player_no(), None);
+        assert_eq!(SlotChoice::Auto.index(), None);
+        assert_eq!(SlotChoice::Auto.label(), "Automatic");
     }
 
     #[cfg(target_os = "windows")]

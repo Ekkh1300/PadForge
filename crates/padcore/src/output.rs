@@ -133,6 +133,16 @@ pub trait OutputBackend: Send {
     fn take_rumble(&mut self) -> Option<(u8, u8)> {
         None
     }
+    /// The XInput slot this pad was published into, if it has one.
+    ///
+    /// Reported rather than assumed because the driver is the one that decides:
+    /// a preferred slot is honoured only when it is free, so the number the
+    /// player ends up on is whatever came back, and showing them the request
+    /// instead of the answer would be the same class of mistake as claiming a
+    /// lightbar was set when the write was refused.
+    fn slot(&self) -> Option<u32> {
+        None
+    }
     /// Tear the virtual device down cleanly.
     fn shutdown(&mut self);
 }
@@ -156,6 +166,11 @@ impl OutputBackend for NullBackend {
     fn submit(&mut self, state: GamepadState) {
         self.last = state;
     }
+    /// No slot exists to report, which is not the same as slot zero: a viewer
+    /// that claimed player 1 would look like a pad a game could drive.
+    fn slot(&self) -> Option<u32> {
+        None
+    }
     fn last_state(&self) -> GamepadState {
         self.last
     }
@@ -166,6 +181,7 @@ impl OutputBackend for NullBackend {
 mod vigem {
     use super::*;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
     use vigem_client::{Client, TargetId, Xbox360Wired};
 
     /// The virtual pad is exposed as a wired Xbox 360 controller, which is what
@@ -190,11 +206,43 @@ mod vigem {
         feedback: Arc<parking_lot::Mutex<Option<(u8, u8)>>>,
         /// The thread draining notifications. Joined once the target is gone.
         notify: Option<std::thread::JoinHandle<()>>,
+        /// XInput slot the driver published this pad into.
+        ///
+        /// Read back from the driver rather than remembered from the request,
+        /// because a preferred slot is only honoured when it is free.
+        slot: Option<u32>,
     }
 
     impl VigemBackend {
-        /// Try to bring up a virtual pad.
+        /// Try to bring up a virtual pad, taking whichever slot is free.
         pub fn connect() -> Self {
+            Self::connect_with_slot(None)
+        }
+
+        /// Try to bring up a virtual pad in `wanted`, an XInput index in `0..4`.
+        ///
+        /// ViGEmBus decides the slot and offers no way to name one, so a
+        /// preference is met by plugging in, reading back where it landed, and
+        /// unplugging to try again if it is wrong. That costs one extra
+        /// enumeration and is the only route to a chosen player.
+        ///
+        /// The retry stops after the first pass. Carrying on until the request
+        /// was met would mean repeatedly unplugging whichever controller holds
+        /// the slot, and a pad that vanishes mid-game is a worse outcome than a
+        /// preference the player can see was not applied.
+        /// Try to bring up a virtual pad, asking for `wanted`, an XInput slot.
+        ///
+        /// ViGEmBus has no way to name a slot: `plugin` takes no index and the
+        /// bus always hands out the lowest free one. So a request is honoured
+        /// only when it agrees with what the bus was going to do anyway, and
+        /// this reports back what actually happened rather than what was asked
+        /// for.
+        ///
+        /// Re-plugging to force a slot was tried and removed. XInput keeps
+        /// reporting a removed controller as present long after it is gone, so
+        /// the bus hands the pad the same slot back every time and the second
+        /// attempt lands exactly where the first did.
+        pub fn connect_with_slot(wanted: Option<usize>) -> Self {
             let client = match Client::connect() {
                 Ok(c) => Arc::new(c),
                 Err(e) => {
@@ -204,23 +252,30 @@ mod vigem {
             };
 
             let mut target = Xbox360Wired::new(Arc::clone(&client), TargetId::XBOX360_WIRED);
+            let slot = Self::plug_and_read(&mut target);
 
-            if let Err(e) = target.plugin() {
-                tracing::warn!("could not plug virtual pad: {e:?}");
-                return Self {
-                    _client: Some(client),
-                    target: None,
-                    connected: false,
-                    last_error: Some(format!("{e:?}")),
-                    last: GamepadState::neutral(),
-                    feedback: Arc::new(parking_lot::Mutex::new(None)),
-                    notify: None,
-                };
+            // Not a failure, and deliberately not one: the pad is live and
+            // every button still works. It is simply somewhere other than
+            // where it was asked to be, which the player needs to know rather
+            // than be left believing the request took.
+            let note = match (wanted, slot) {
+                (Some(w), Some(s)) if w != s as usize => Some(format!(
+                    "Player {} is not available to this pad, so it is Player {}",
+                    w + 1,
+                    s + 1
+                )),
+                // Nothing to report on either count. An unnamed slot is worth a
+                // line of its own: without a number there is no way to tell
+                // which player a game will pick this pad as.
+                (Some(w), None) => Some(format!(
+                    "Player {} was asked for, and the driver did not say where it landed",
+                    w + 1
+                )),
+                _ => None,
+            };
+            if let Some(note) = &note {
+                tracing::info!("{note}");
             }
-
-            // The device is enumerated asynchronously, so give it a moment
-            // before the first report or the update races device startup.
-            let _ = target.wait_ready();
 
             let feedback = Arc::new(parking_lot::Mutex::new(None));
             let notify = match target.request_notification() {
@@ -230,7 +285,23 @@ mod vigem {
                         // XInput calls the low-frequency motor "large" and the
                         // high-frequency one "small", while the DualShock report
                         // wants them as (heavy, fast). They line up in that order.
-                        *slot.lock() = Some((data.large_motor, data.small_motor));
+                        //
+                        // Logged on change rather than on every notification:
+                        // a driver calls back continuously, and a line per
+                        // callback would bury everything else in the file. A
+                        // change is the only value worth a line, and it is
+                        // exactly what is missing when a vibration never
+                        // arrives — the callback fires, with zeroes, forever.
+                        let motors = (data.large_motor, data.small_motor);
+                        let mut previous = slot.lock();
+                        if *previous != Some(motors) {
+                            tracing::debug!(
+                                "force feedback from the driver: heavy={} fast={}",
+                                motors.0,
+                                motors.1
+                            );
+                        }
+                        *previous = Some(motors);
                     }))
                 }
                 Err(e) => {
@@ -246,10 +317,71 @@ mod vigem {
                 _client: Some(client),
                 target: Some(target),
                 connected: true,
-                last_error: None,
+                last_error: note,
                 last: GamepadState::neutral(),
                 feedback,
                 notify,
+                slot,
+            }
+        }
+
+        /// How long to wait for the driver to name the slot this pad landed in.
+        ///
+        /// Enumeration is asynchronous, so the number is not there the moment
+        /// the pad is plugged in. This is a ceiling, not a delay: the loop
+        /// below returns as soon as the driver answers, and this only bounds
+        /// how long it may stay silent.
+        const SLOT_WAIT_MS: u64 = 500;
+
+        /// How often to look for the pad's slot to become known.
+        const SLOT_POLL_MS: u64 = 10;
+
+        /// Plug the pad in and ask the driver which XInput slot it took.
+        ///
+        /// Enumeration is asynchronous, so the number is not available the
+        /// instant `plugin` returns. Rather than sleep a fixed amount and hope,
+        /// the question is asked repeatedly until it is answered, which is
+        /// quick on a healthy machine and bounded on one that never answers.
+        ///
+        /// The driver's own message is what decides whether to ask again.
+        /// "Not ready yet" is an answer that will change; anything else is an
+        /// answer that will not, and retrying it would only delay finding out.
+        fn plug_and_read(target: &mut Pad) -> Option<u32> {
+            if let Err(e) = target.plugin() {
+                tracing::warn!("could not plug virtual pad: {e:?}");
+                return None;
+            }
+            let _ = target.wait_ready();
+
+            let deadline = Instant::now() + Duration::from_millis(Self::SLOT_WAIT_MS);
+            loop {
+                match target.get_user_index() {
+                    Ok(i) => return Some(i),
+                    Err(e) => {
+                        // WinError 433 is `ERROR_INVALID_DEVICE_OBJECT_PARAMETER`,
+                        // which the driver returns while it is still working out
+                        // where the pad landed. It is the only refusal that
+                        // changes with time, so it is the only one worth
+                        // asking again; anything else is a real answer.
+                        //
+                        // Matched by its meaning rather than by the text of the
+                        // message, which is Windows' and could be reworded.
+                        let not_ready = matches!(
+                            e,
+                            vigem_client::Error::UserIndexOutOfRange
+                                | vigem_client::Error::WinError(433)
+                        );
+                        if !not_ready {
+                            tracing::warn!("the driver did not report the XInput slot: {e:?}");
+                            return None;
+                        }
+                        if Instant::now() >= deadline {
+                            tracing::warn!("the driver never settled on an XInput slot: {e:?}");
+                            return None;
+                        }
+                        std::thread::sleep(Duration::from_millis(Self::SLOT_POLL_MS));
+                    }
+                }
             }
         }
 
@@ -263,6 +395,7 @@ mod vigem {
                 last: GamepadState::neutral(),
                 feedback: Arc::new(parking_lot::Mutex::new(None)),
                 notify: None,
+                slot: None,
             }
         }
 
@@ -315,6 +448,10 @@ mod vigem {
 
         fn take_rumble(&mut self) -> Option<(u8, u8)> {
             self.feedback.lock().take()
+        }
+
+        fn slot(&self) -> Option<u32> {
+            self.slot
         }
 
         fn shutdown(&mut self) {

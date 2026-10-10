@@ -312,7 +312,8 @@ pub fn parse(buf: &[u8]) -> Option<Ds4Report> {
     let raw_rx = buf[a + 2];
     let raw_ry = buf[a + 3];
 
-    // Byte 4 of the analog block: D-pad in the high nibble, face buttons in the low.
+    // Byte 4 of the analog block: a four-bit hat switch in the low nibble and the
+    // four face buttons in the high one.
     let face = buf[a + 4];
     // Byte 5 is the shoulder cluster: L1, R1, the digital L2/R2 pair, Share,
     // Options, L3 and R3, one bit each from bit 0 upward.
@@ -332,29 +333,45 @@ pub fn parse(buf: &[u8]) -> Option<Ds4Report> {
     let r2 = buf[a + 8];
 
     let mut bits = 0u16;
-    if face & 0x01 != 0 {
-        bits |= Buttons::CROSS;
-    }
-    if face & 0x02 != 0 {
-        bits |= Buttons::CIRCLE;
-    }
-    if face & 0x04 != 0 {
+
+    // The face buttons occupy the high nibble, in descending bit order from
+    // Triangle down to Square. They used to be read from the low nibble, which
+    // meant every face button was reported as the wrong one and the d-pad — the
+    // four bits they were actually sitting on — was reported as four face
+    // buttons.
+    if face & 0x10 != 0 {
         bits |= Buttons::SQUARE;
     }
-    if face & 0x08 != 0 {
-        bits |= Buttons::TRIANGLE;
-    }
-    if face & 0x10 != 0 {
-        bits |= Buttons::UP;
-    }
     if face & 0x20 != 0 {
-        bits |= Buttons::DOWN;
+        bits |= Buttons::CROSS;
     }
     if face & 0x40 != 0 {
-        bits |= Buttons::LEFT;
+        bits |= Buttons::CIRCLE;
     }
     if face & 0x80 != 0 {
-        bits |= Buttons::RIGHT;
+        bits |= Buttons::TRIANGLE;
+    }
+
+    // The d-pad is one hat switch with nine positions, not four buttons. It runs
+    // like a clock face — 0 is up, then clockwise in eighths of a turn — and 8
+    // is the resting centre.
+    //
+    // Reading it as four independent bits was wrong in both directions: an
+    // untouched pad reports 8, which has bit 3 set, so "right" was lit while the
+    // pad sat on the desk, and the four diagonal positions could not be
+    // expressed at all because they are single values rather than pairs of bits.
+    match face & 0x0F {
+        0 => bits |= Buttons::UP,
+        1 => bits |= Buttons::UP | Buttons::RIGHT,
+        2 => bits |= Buttons::RIGHT,
+        3 => bits |= Buttons::DOWN | Buttons::RIGHT,
+        4 => bits |= Buttons::DOWN,
+        5 => bits |= Buttons::DOWN | Buttons::LEFT,
+        6 => bits |= Buttons::LEFT,
+        7 => bits |= Buttons::UP | Buttons::LEFT,
+        // 8 is centred, and anything above it is the pad being held between
+        // positions. Neither presses anything.
+        _ => {}
     }
     if shoulder & 0x01 != 0 {
         bits |= Buttons::L1;
@@ -509,9 +526,51 @@ fn i16le(b: &[u8]) -> i16 {
     i16::from_le_bytes([b[0], b[1]])
 }
 
+/// Length of the Bluetooth output report.
+///
+/// Every field the pad acts on lives in the first 78 bytes, and the last four
+/// of those are the CRC. Nothing after them is read.
+///
+/// The number of bytes actually handed to the driver is not this, and is not
+/// the application's to choose: hidapi pads the buffer to the output report
+/// length the interface declares — 547 on this pad — whatever is passed in. So
+/// a shorter or longer buffer here changes only how much zero padding travels
+/// with an identical report.
+pub const BT_PAYLOAD_LEN: usize = 78;
+
+/// First byte of the CRC's input.
+///
+/// The pad drops any Bluetooth output report whose last four bytes are not a
+/// CRC-32 over `[0xA2, report[..len - 4]]`. A write without it is accepted by
+/// the driver and then ignored by the pad, which is indistinguishable in the UI
+/// from a write that never happened.
+const BT_CRC_SEED: u8 = 0xA2;
+
+/// Where the Bluetooth report's CRC is stored, and how much it covers.
+const BT_CRC_AT: usize = BT_PAYLOAD_LEN - 4;
+
+/// Standard CRC-32: reflected, polynomial 0xEDB88320, initial and final XOR
+/// 0xFFFFFFFF. The same CRC as zip, gzip and Ethernet, which is what the pad
+/// asks for.
+fn crc32(data: &[u8], seed: u32) -> u32 {
+    let mut crc = seed;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc
+}
+
 /// Build the DS4 output report used for lightbar colour and rumble.
 ///
-/// Offsets differ per transport, matching the input report layouts.
+/// Offsets differ per transport, matching the input report layouts. The buffer
+/// returned is the report and nothing else; the write path pads it.
 pub fn output_report(
     transport: Transport,
     red: u8,
@@ -519,51 +578,126 @@ pub fn output_report(
     blue: u8,
     rumble: Option<(u8, u8)>,
 ) -> Vec<u8> {
-    let len = match transport {
+    output_report_len(transport, 0, red, green, blue, rumble)
+}
+
+/// As [`output_report`], padded to at least `min_len` bytes.
+///
+/// The extra bytes are all zero and the pad reads none of them, so `min_len`
+/// never changes what the pad does — only how much padding rides along. Kept
+/// separate because the probes that write to the pad directly need to control
+/// the exact size, and because testing that question honestly means being able
+/// to vary it.
+pub fn output_report_len(
+    transport: Transport,
+    write_len: usize,
+    red: u8,
+    green: u8,
+    blue: u8,
+    rumble: Option<(u8, u8)>,
+) -> Vec<u8> {
+    let payload = match transport {
         Transport::Usb => 64,
-        Transport::Bluetooth => 78,
+        Transport::Bluetooth => BT_PAYLOAD_LEN,
     };
-    let mut buf = vec![0u8; len];
+    // Never truncate: a caller asking for fewer bytes than the payload has
+    // misread the interface, and silently chopping the report would turn a
+    // device that answers wrongly into one that answers never.
+    let mut buf = vec![0u8; write_len.max(payload)];
 
-    // The two transports do not share a layout at all, and treating them as if
-    // they did is why rumble appeared to work while doing nothing.
+    // The two transports do not share a single offset, so each field is placed
+    // by name rather than by a tuple that has to be counted out.
     //
-    // Over USB it is report 0x05 and the values sit at the front. Over Bluetooth
-    // it is report 0x11 with a poll rate, a feature mask and a fixed byte
-    // before any of them, and every value is eight bytes further along than the
-    // USB equivalent. Sending 0x05 to a Bluetooth pad is rejected outright by
-    // the driver, which is why nothing was ever felt.
-    //
-    // Layouts confirmed against DS4Windows, PrepareOutputReportInner.
-    let (report_id, poll_and_rate, features, reserved, fast, slow, r, g, b) = match transport {
-        Transport::Usb => (0x05u8, 0u8, 0u8, 0u8, 4usize, 5, 1usize, 2, 3),
-        Transport::Bluetooth => (0x11, 0xC0, 0x07, 0x04, 6, 7, 8, 9, 10),
-    };
-
-    buf[0] = report_id;
-    buf[r] = red;
-    buf[g] = green;
-    buf[b] = blue;
-
-    if transport == Transport::Bluetooth {
-        // The poll rate is a rate code rather than a frequency: 0xC0 is 125 Hz,
-        // the pad's own mode. Getting this wrong makes the pad ignore the rest
-        // of the report, so it is set explicitly rather than left at zero.
-        buf[1] = poll_and_rate;
-        // Bit 0 rumble, bit 1 lightbar, bit 2 flash. Without this the pad
-        // receives a valid report and does nothing with it, which is precisely
-        // the failure this whole path had.
-        buf[3] = features;
-        buf[4] = reserved;
+    // Layouts confirmed against DS4Windows, PrepareOutputReportInner. Both were
+    // previously wrong in the same way: the colour sat where the feature mask
+    // belongs and the mask was never written at all, so the USB pad was told
+    // nothing about what to do with the bytes it was sent — which is why the
+    // lightbar only ever worked over Bluetooth.
+    struct Out {
+        report_id: u8,
+        /// The Bluetooth poll rate byte, which has no USB counterpart.
+        poll: Option<u8>,
+        /// Bit 0 enables the rumble, bit 1 the lightbar, bit 2 the flash. The
+        /// pad reads this before it reads anything else, so leaving it zero
+        /// turns every report that follows into an inert block of bytes.
+        features: usize,
+        reserved: usize,
+        fast: usize,
+        slow: usize,
+        r: usize,
+        g: usize,
+        b: usize,
+        flash_on: usize,
+        flash_off: usize,
     }
+
+    let out = match transport {
+        Transport::Usb => Out {
+            report_id: 0x05,
+            poll: None,
+            features: 1,
+            reserved: 2,
+            fast: 4,
+            slow: 5,
+            r: 6,
+            g: 7,
+            b: 8,
+            flash_on: 9,
+            flash_off: 10,
+        },
+        Transport::Bluetooth => Out {
+            report_id: 0x11,
+            // A rate code rather than a frequency: 0xC0 is 125 Hz, the pad's own
+            // mode. Getting this wrong makes the pad ignore the rest of the
+            // report, so it is set explicitly rather than left at zero.
+            poll: Some(0xC0),
+            features: 3,
+            reserved: 4,
+            fast: 6,
+            slow: 7,
+            r: 8,
+            g: 9,
+            b: 10,
+            flash_on: 11,
+            flash_off: 12,
+        },
+    };
+
+    buf[0] = out.report_id;
+    if let Some(rate) = out.poll {
+        buf[1] = rate;
+    }
+    buf[out.features] = 0x07;
+    buf[out.reserved] = 0x04;
+    buf[out.r] = red;
+    buf[out.g] = green;
+    buf[out.b] = blue;
+    // No flashing: the flash durations are a separate pair of bytes, and
+    // leaving them at the pad's default is what keeps a steady colour steady.
+    buf[out.flash_on] = 0;
+    buf[out.flash_off] = 0;
 
     if let Some((heavy, fast_motor)) = rumble {
         // Full bytes, one per motor. They are not nibbles sharing a byte, and a
         // 0x0F mask capped every rumble at about 6% strength, so a full one felt
         // like a tap rather than a rumble.
-        buf[fast] = fast_motor;
-        buf[slow] = heavy;
+        buf[out.fast] = fast_motor;
+        buf[out.slow] = heavy;
     }
+
+    if transport == Transport::Bluetooth {
+        // The seal on the report. The driver forwards whatever it is given; the
+        // pad is the one that checks the last four bytes, and a report without
+        // them is dropped without a word. Written little-endian, which is the
+        // order the pad reads it in.
+        let crc = crc32(&[BT_CRC_SEED], 0xFFFF_FFFF);
+        let crc = !crc32(&buf[..BT_CRC_AT], crc);
+        buf[BT_CRC_AT] = crc as u8;
+        buf[BT_CRC_AT + 1] = (crc >> 8) as u8;
+        buf[BT_CRC_AT + 2] = (crc >> 16) as u8;
+        buf[BT_CRC_AT + 3] = (crc >> 24) as u8;
+    }
+
     buf
 }
 
@@ -578,7 +712,10 @@ mod tests {
         b[2] = 128; // LY centre
         b[3] = 128;
         b[4] = 128;
-        b[5] = 0x00; // no face buttons
+        // 0x08 is the hat switch at rest. An idle pad sends this and nothing
+        // else in the byte, so a fixture that zeroes it is describing a pad
+        // someone is holding a direction on.
+        b[5] = 0x08;
         b[6] = 0x00;
         b[7] = 0x00;
         b
@@ -604,12 +741,76 @@ mod tests {
         );
     }
 
+    /// The feature mask has to be written on both transports.
+    ///
+    /// It used to be written on neither, and on USB it was then overwritten by
+    /// the red channel, which had been placed at the mask's own offset. The pad
+    /// was therefore told to enable nothing, and a lightbar command sent over
+    /// USB arrived as a valid report the pad was instructed to ignore.
     #[test]
-    fn usb_output_keeps_its_own_layout() {
-        let buf = output_report(Transport::Usb, 11, 22, 33, Some((44, 55)));
-        assert_eq!(buf[0], 0x05, "USB output is report 0x05");
-        assert_eq!((buf[1], buf[2], buf[3]), (11, 22, 33), "colour at 1, 2, 3");
-        assert_eq!((buf[4], buf[5]), (55, 44), "motors at 4 and 5");
+    fn both_transports_enable_rumble_and_lightbar() {
+        for transport in [Transport::Usb, Transport::Bluetooth] {
+            let buf = output_report(transport, 255, 0, 0, Some((255, 255)));
+            let at = match transport {
+                Transport::Usb => 1usize,
+                Transport::Bluetooth => 3,
+            };
+            assert_eq!(
+                buf[at],
+                0x07,
+                "{}: rumble, lightbar and flash must all be enabled",
+                transport.label()
+            );
+        }
+    }
+
+    /// Each field of the outgoing report checked against where DS4Windows,
+    /// PrepareOutputReportInner, puts it.
+    ///
+    /// The mask alone does not settle anything. A report can enable the motors
+    /// and still address them somewhere the pad is not looking, which is exactly
+    /// what happened when every value sat eight bytes early over Bluetooth: the
+    /// mask was honoured, the lightbar moved, and the motors read zeros from a
+    /// pair of bytes nothing had written to.
+    #[test]
+    fn outgoing_fields_land_where_the_pad_reads_them() {
+        // Every value distinct, so a field read from a neighbour's offset cannot
+        // pass by borrowing a value that happens to be right elsewhere.
+        let bt = output_report(Transport::Bluetooth, 0x11, 0x22, 0x33, Some((0x44, 0x55)));
+
+        assert_eq!(bt[0], 0x11, "Bluetooth output is report 0x11");
+        assert_eq!(bt[1], 0xC0, "the rate code, not a raw frequency");
+        assert_eq!(bt[4], 0x04, "the reserved byte the pad expects");
+        assert_eq!((bt[6], bt[7]), (0x55, 0x44), "fast, then heavy");
+        assert_eq!((bt[8], bt[9], bt[10]), (0x11, 0x22, 0x33), "colour follows");
+
+        // Same report over USB, where nothing sits where it did over Bluetooth.
+        let usb = output_report(Transport::Usb, 0x11, 0x22, 0x33, Some((0x44, 0x55)));
+        assert_eq!(usb[0], 0x05, "USB output is report 0x05");
+        assert_eq!(usb[2], 0x04, "the reserved byte moved with everything else");
+        assert_eq!((usb[4], usb[5]), (0x55, 0x44), "motors stay at 4 and 5");
+        assert_eq!(
+            (usb[6], usb[7], usb[8]),
+            (0x11, 0x22, 0x33),
+            "colour at 6, 7, 8"
+        );
+
+        // The padding carries none of it, so asking for a longer write cannot
+        // move a field: what the pad reads is the same either way.
+        let long = output_report_len(
+            Transport::Bluetooth,
+            547,
+            0x11,
+            0x22,
+            0x33,
+            Some((0x44, 0x55)),
+        );
+        assert_eq!(
+            long.len(),
+            547,
+            "padded to the length the interface declares"
+        );
+        assert_eq!(&long[..bt.len()], &bt[..], "padding changes no field");
     }
 
     /// Full strength has to survive, because masking to a nibble is what made a
@@ -641,7 +842,7 @@ mod tests {
     #[test]
     fn rumble_and_colour_do_not_overlap() {
         for (transport, fast, slow, r, g, b) in [
-            (Transport::Usb, 4usize, 5usize, 1usize, 2usize, 3usize),
+            (Transport::Usb, 4usize, 5usize, 6usize, 7usize, 8usize),
             (Transport::Bluetooth, 6, 7, 8, 9, 10),
         ] {
             let buf = output_report(transport, 11, 22, 33, Some((44, 55)));
@@ -660,12 +861,58 @@ mod tests {
         }
     }
 
-    /// Both reports have to be the length their transport declares, because
-    /// hidapi pads anything shorter and rejects the result.
+    /// The report must be exactly the length its protocol declares, because
+    /// that is the part the pad parses. Anything beyond it is padding the write
+    /// path supplies and the pad never reads.
     #[test]
     fn output_lengths_match_the_transport() {
         assert_eq!(output_report(Transport::Usb, 0, 0, 0, None).len(), 64);
         assert_eq!(output_report(Transport::Bluetooth, 0, 0, 0, None).len(), 78);
+    }
+
+    /// The Bluetooth report is only worth sending with a valid CRC, because the
+    /// pad discards a report whose last four bytes do not match — and a
+    /// discarded report and a never-sent report are indistinguishable from
+    /// inside the application. This is what separates a lightbar that changes
+    /// from one that silently ignores every command.
+    ///
+    /// The value is checked against the algorithm rather than a golden number
+    /// copied from a successful run, so the test still says something if the
+    /// inputs change.
+    #[test]
+    fn bluetooth_report_carries_a_valid_crc() {
+        let buf = output_report(Transport::Bluetooth, 11, 22, 33, Some((44, 55)));
+
+        // The pad seeds the CRC with a single leading byte, so hashing that
+        // byte plus everything before the checksum must reproduce the checksum.
+        let mut covered = vec![0xA2u8];
+        covered.extend_from_slice(&buf[..BT_CRC_AT]);
+        let computed = !crc32(&covered, 0xFFFF_FFFF);
+
+        let stored = u32::from(buf[BT_CRC_AT])
+            | (u32::from(buf[BT_CRC_AT + 1]) << 8)
+            | (u32::from(buf[BT_CRC_AT + 2]) << 16)
+            | (u32::from(buf[BT_CRC_AT + 3]) << 24);
+
+        assert_eq!(
+            stored, computed,
+            "the CRC the pad checks must match the report it covers"
+        );
+        // The checksum lives in the last four bytes of the payload, not over it.
+        assert_eq!(BT_CRC_AT + 4, BT_PAYLOAD_LEN);
+    }
+
+    /// The checksum has to cover the fields it protects: if the colour or the
+    /// motors change, the stored CRC must change with them.
+    #[test]
+    fn bluetooth_crc_follows_the_report_contents() {
+        let a = output_report(Transport::Bluetooth, 255, 0, 0, Some((255, 0)));
+        let b = output_report(Transport::Bluetooth, 0, 255, 0, Some((0, 255)));
+        assert_ne!(
+            a[BT_CRC_AT..BT_CRC_AT + 4],
+            b[BT_CRC_AT..BT_CRC_AT + 4],
+            "two different reports must not carry the same checksum"
+        );
     }
 
     #[test]
@@ -679,11 +926,78 @@ mod tests {
     #[test]
     fn face_buttons_map_to_bits() {
         let mut b = usb_report();
-        b[5] = 0x01 | 0x40; // cross + dpad-left
+        b[5] = 0x20 | 0x06; // cross (bit 5) and hat position 6, which is left
         let r = parse(&b).unwrap();
         assert!(r.buttons.contains(Buttons::CROSS));
         assert!(r.buttons.contains(Buttons::LEFT));
         assert!(!r.buttons.any(Buttons::CIRCLE));
+    }
+
+    /// The four face buttons live in the high nibble, one bit each, and every
+    /// one has to land on its own button. They used to be read from the low
+    /// nibble, which is where the d-pad lives, so Triangle lit up on a pad
+    /// nobody was holding and Cross lit up when the d-pad was pushed left.
+    #[test]
+    fn every_face_button_lands_on_its_own_bit() {
+        let face = Buttons::SQUARE | Buttons::CROSS | Buttons::CIRCLE | Buttons::TRIANGLE;
+        for (mask, want) in [
+            (0x10u8, Buttons::SQUARE),
+            (0x20, Buttons::CROSS),
+            (0x40, Buttons::CIRCLE),
+            (0x80, Buttons::TRIANGLE),
+        ] {
+            let mut b = usb_report();
+            b[5] = mask;
+            let r = parse(&b).expect("should decode");
+            assert!(
+                r.buttons.contains(want) && (r.buttons.raw() & face) == want,
+                "byte {mask:#04x} must be that button and no other"
+            );
+        }
+    }
+
+    /// The d-pad is a single hat switch with nine positions, running clockwise
+    /// from up, with 8 as the resting centre.
+    ///
+    /// The four diagonals matter most here: they are single values on the wire,
+    /// not two directions at once, so any decoder treating the d-pad as four
+    /// independent buttons cannot express them however carefully it is written.
+    #[test]
+    fn the_hat_switch_reports_all_nine_positions() {
+        let dpad = Buttons::UP | Buttons::DOWN | Buttons::LEFT | Buttons::RIGHT;
+        for (hat, want) in [
+            (0x00u8, Buttons::UP),
+            (0x01, Buttons::UP | Buttons::RIGHT),
+            (0x02, Buttons::RIGHT),
+            (0x03, Buttons::DOWN | Buttons::RIGHT),
+            (0x04, Buttons::DOWN),
+            (0x05, Buttons::DOWN | Buttons::LEFT),
+            (0x06, Buttons::LEFT),
+            (0x07, Buttons::UP | Buttons::LEFT),
+            (0x08, 0u16),
+        ] {
+            let mut b = usb_report();
+            b[5] = hat;
+            let r = parse(&b).expect("should decode");
+            assert_eq!(
+                r.buttons.raw() & dpad,
+                want,
+                "hat position {hat} must decode as {want}"
+            );
+        }
+    }
+
+    /// The frame the pad sends when nobody is touching it has to decode as
+    /// untouched.
+    ///
+    /// This is the regression test for the whole button bug: the captured frame
+    /// carries 0x08 in the button byte, and 0x08 has bit 3 set, so a decoder
+    /// reading the hat as four buttons reported "right" on a pad sitting
+    /// untouched — and, from the same byte, a face button that nobody pressed.
+    #[test]
+    fn an_idle_pad_holds_nothing_down() {
+        let r = parse(&real_bluetooth_report(83)).expect("should decode");
+        assert_eq!(r.buttons.raw(), 0, "an untouched pad presses nothing");
     }
 
     #[test]

@@ -14,6 +14,7 @@ mod theme;
 mod tray;
 mod widgets;
 
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use padcore::engine::{self, EngineHandle};
@@ -85,8 +86,13 @@ impl CommandLine {
     }
 }
 
-/// A minimal file logger, so diagnostics land somewhere without pulling in a
-/// tracing subscriber.
+/// Route diagnostics into `%APPDATA%\PadForge\logs\padforge.log`.
+///
+/// This used to write a single line and stop, because no tracing subscriber was
+/// ever installed — so the setting was named "logging" and the app logged
+/// nothing. That is not a cosmetic loss: the engine announces a real hardware
+/// failure with `warn!` ("force feedback notifications unavailable"), and with
+/// nowhere for it to go, a broken vibration looks identical to a working one.
 fn init_logging(settings: &Settings) {
     if !settings.logging {
         return;
@@ -103,19 +109,77 @@ fn init_logging(settings: &Settings) {
         .open(&path)
     {
         Ok(f) => f,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!("padforge: could not open the log file: {e}");
+            return;
+        }
     };
 
-    use std::io::Write;
-    let mut file = file;
-    let _ = writeln!(
-        file,
-        "[{}] padforge {} starting (logging={}, debug={})",
-        timestamp(),
-        padcore::APP_VERSION,
-        settings.logging,
-        settings.debug_logging
-    );
+    let file = Arc::new(Mutex::new(file));
+    {
+        let mut guard = file.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = writeln!(
+            guard,
+            "[{}] padforge {} starting (logging={}, debug={})",
+            timestamp(),
+            padcore::APP_VERSION,
+            settings.logging,
+            settings.debug_logging
+        );
+    }
+
+    // `debug` only when asked for. The engine's normal chatter is a line per
+    // poll-rate change and nothing more, but a verbose run still has to be
+    // something a person chose rather than something they inherited.
+    let level = if settings.debug_logging {
+        "debug"
+    } else {
+        "info"
+    };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(format!("padcore={level},padforge={level}"))
+    });
+
+    // `try_init`, not `init`: a second call would panic, and the cost of
+    // silently keeping the first subscriber is a log file rather than a crash.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(SharedFile(file))
+        .try_init();
+}
+
+/// The log file, shared between the banner line above and every later event.
+///
+/// `MakeWriter` is implemented by hand rather than borrowed from the closure
+/// form: that form cannot return a borrow of its own capture, and a log file
+/// that is written from the engine thread and the UI thread at once needs the
+/// lock held for the length of each write or the lines interleave.
+///
+/// The guard is wrapped rather than used directly because `MutexGuard` is not
+/// `io::Write`; the wrapper forwards to the file underneath it and holds the
+/// lock for exactly as long as the borrow lives.
+struct SharedFile(Arc<Mutex<std::fs::File>>);
+
+struct SharedFileGuard<'a>(std::sync::MutexGuard<'a, std::fs::File>);
+
+impl std::io::Write for SharedFileGuard<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedFile {
+    type Writer = SharedFileGuard<'a>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SharedFileGuard(self.0.lock().unwrap_or_else(|e| e.into_inner()))
+    }
 }
 
 /// Seconds since the Unix epoch, for log lines.

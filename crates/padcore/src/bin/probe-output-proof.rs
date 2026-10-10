@@ -99,7 +99,10 @@ fn main() {
 
     for (name, r, g, b, rumble) in steps {
         let report = report::output_report(transport, r, g, b, rumble);
-        let accepted = device.send_output_report(&report).is_ok();
+        // `write` rather than `send_output_report`: the latter puts the report
+        // through the 64 byte feature buffer, which cannot hold it, so it is
+        // refused every time and this probe would only ever prove that.
+        let accepted = device.write(&report).is_ok();
 
         // Hold the setting long enough to sample several frames.
         sleep(Duration::from_millis(700));

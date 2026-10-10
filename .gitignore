@@ -12,6 +12,11 @@ tools/assets/
 # Debug screenshots taken next to the source during development.
 *.log
 docs/*.png
+# Automation scratch: _shot_pw.ps1 / _pulse.ps1 capture PNGs named _shot_* and
+# _pulse* while driving the real window. They are a diagnostic, not a build
+# input, so the captures are disposable and the scripts stay.
+tools/_shot_*.png
+tools/_pulse*.png
 # ...except the ones the README and the release page show.
 !docs/installer.png
 !docs/icon-128.png

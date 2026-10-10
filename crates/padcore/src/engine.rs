@@ -57,6 +57,13 @@ pub struct Telemetry {
     pub active_controls: Vec<&'static str>,
     pub output_backend: String,
     pub output_connected: bool,
+    /// XInput slot the virtual pad was published into, `0..4`.
+    ///
+    /// Reported rather than assumed: the driver decides the slot, and a
+    /// requested one that was already taken leaves the pad somewhere else.
+    /// `None` means the driver did not name one, which is shown as unknown
+    /// rather than guessed at.
+    pub output_slot: Option<u32>,
     pub profile_name: String,
     pub profile_id: String,
     pub packets: u64,
@@ -118,6 +125,7 @@ impl Default for Telemetry {
             active_controls: Vec::new(),
             output_backend: "starting".into(),
             output_connected: false,
+            output_slot: None,
             profile_name: String::new(),
             profile_id: String::new(),
             packets: 0,
@@ -413,10 +421,17 @@ impl Engine {
 
         #[cfg(target_os = "windows")]
         if self.settings.output_mode == OutputMode::Xbox360 {
-            let vigem = crate::output::VigemBackend::connect();
+            let vigem =
+                crate::output::VigemBackend::connect_with_slot(self.settings.virtual_slot.index());
             self.vigem_error = vigem.last_error().map(str::to_owned);
             if vigem.is_connected() {
-                info!("virtual pad ready");
+                match vigem.slot() {
+                    Some(s) => info!("virtual pad ready as XInput slot {s}"),
+                    // The pad still works; the driver simply did not say which
+                    // player it became, so this is a gap in what can be shown
+                    // rather than in what reaches a game.
+                    None => warn!("virtual pad ready, slot unknown"),
+                }
                 self.backend = Box::new(vigem);
             } else {
                 warn!("no virtual pad; input will not reach games");
@@ -554,7 +569,12 @@ impl Engine {
                 let next = s.sanitised();
                 let needs_reader = next.poll_rate_hz != self.settings.poll_rate_hz
                     || next.device != self.settings.device;
-                let needs_backend = next.output_mode != self.settings.output_mode;
+                // A different player is a different pad as far as Windows is
+                // concerned, so the backend is rebuilt rather than asked to
+                // move: moving means unplugging and plugging again, which is
+                // exactly what a fresh build does anyway.
+                let needs_backend = next.output_mode != self.settings.output_mode
+                    || next.virtual_slot != self.settings.virtual_slot;
                 self.settings = next;
                 if needs_backend {
                     self.build_backend();
@@ -710,6 +730,7 @@ impl Engine {
                 active_controls: active,
                 output_backend: self.backend.name(),
                 output_connected: self.backend.is_connected(),
+                output_slot: self.backend.slot(),
                 profile_name: profile.name.clone(),
                 profile_id: profile.id.clone(),
                 packets: snap.packets,
@@ -1027,6 +1048,18 @@ impl Engine {
             Some(self.rumble_target),
         );
         if reader.send_output(&buf) {
+            // Only when the motors are actually moving: this fires on every
+            // colour change too, and a line per frame would drown the file.
+            // Its absence is the other half of the diagnosis — feedback
+            // arriving but no report carrying it means the value died between
+            // `take_rumble` and the write.
+            if self.rumble_target != (0, 0) {
+                tracing::debug!(
+                    heavy = self.rumble_target.0,
+                    fast = self.rumble_target.1,
+                    "wrote a rumble report to the pad"
+                );
+            }
             self.last_lightbar = colour;
             self.rumble_sent = Some(self.rumble_target);
         }
@@ -1060,8 +1093,10 @@ impl Engine {
             return;
         }
 
+        tracing::debug!(?slots, "rumble test: asking XInput to vibrate");
         match crate::xinput::vibrate(&slots, TEST_RUMBLE_HEAVY, TEST_RUMBLE_FAST) {
-            Ok(_) => {
+            Ok(accepted) => {
+                tracing::debug!(accepted, "rumble test: XInput accepted");
                 // The stop is scheduled rather than slept through: this thread
                 // is what turns a vibration into a report, so blocking it until
                 // the motors are due to stop would let the request to stop

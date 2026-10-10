@@ -704,8 +704,23 @@ fn service_output(device: &hidapi::HidDevice, rx: &Receiver<Vec<u8>>, health: &O
 
         let mut failure: Option<String> = None;
         for attempt in 1..=OUTPUT_ATTEMPTS {
-            match device.send_output_report(&buf) {
-                Ok(()) => {
+            // `write`, not `send_output_report`.
+            //
+            // They do not reach the pad the same way. `send_output_report` calls
+            // HidD_SetOutputReport through the *feature* report buffer, which on
+            // this pad is 64 bytes, and the Bluetooth output report is 78 — so
+            // the report is truncated before it leaves the process and the
+            // driver answers ERROR_INVALID_PARAMETER for every single write.
+            // That is the "controller refused an output report" the status strip
+            // was showing, and it is why neither the lightbar nor the rumble
+            // ever reached the hardware while input was arriving perfectly.
+            //
+            // `write` goes through WriteFile with the output report buffer,
+            // which is what DS4Windows does and what the pad expects. hidapi
+            // pads it to the declared output length, so the size handed in does
+            // not have to be guessed.
+            match device.write(&buf) {
+                Ok(_) => {
                     health.sent();
                     failure = None;
                     break;

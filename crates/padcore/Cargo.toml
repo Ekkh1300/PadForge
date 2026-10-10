@@ -38,4 +38,9 @@ windows-sys = { version = "0.61", features = [
     # Drives the virtual pad the way a game would, which is the only way to ask
     # for force feedback and the only way to prove rumble end to end.
     "Win32_UI_Input_XboxController",
+    # probe-output-caps asks the HID interface directly what a write must look
+    # like, which hidapi does not expose.
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
 ] }
