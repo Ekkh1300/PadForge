@@ -26,6 +26,21 @@ pub struct PadPreview {
     pub lightbar: Color32,
     /// Dim everything, e.g. while disconnected or paused.
     pub dimmed: bool,
+    /// Draw where the pad is being touched, not just that it is.
+    ///
+    /// Off by default: on the dashboard the preview is small enough that a
+    /// five-pixel dot is noise, and the state it conveys — touched, clicked —
+    /// is already two colours of fill. The Test page turns it on, because
+    /// there the question it answers is the whole point: a touchpad that
+    /// reports a touch and never moves is a different fault from one that
+    /// reports nothing, and only the position shows which.
+    pub touch_point: bool,
+    /// Widest the drawing may get, in points.
+    ///
+    /// The dashboard keeps it small so it shares its card with the axis
+    /// readouts. The Test page is nothing but the preview, so it asks for
+    /// more and gets a drawing big enough to see a button fail on.
+    pub max_width: f32,
 }
 
 impl PadPreview {
@@ -35,6 +50,8 @@ impl PadPreview {
             output_buttons: XButtons::default(),
             lightbar: ACCENT,
             dimmed: false,
+            touch_point: false,
+            max_width: 310.0,
         }
     }
 
@@ -45,11 +62,18 @@ impl PadPreview {
         // a controller is wider than it is tall: a portrait box leaves a strip
         // of nothing hanging under the grips.
         let available = ui.available_size();
-        let box_w = available.x.min(available.y * 0.62).clamp(200.0, 310.0);
+        // The drawing's own proportion, used both to size it and to ask how
+        // much room a given width needs — otherwise the height cap and the
+        // height it actually takes are two numbers that can disagree.
+        let aspect = 0.60;
+        let box_w = available
+            .x
+            .min(available.y / aspect)
+            .clamp(200.0, self.max_width);
         // Just tall enough for the silhouette: the drawing runs from the
         // triggers near the top edge to the bottom of the grips, and the
         // leftover was a band of nothing between them and the next row.
-        let size = Vec2::new(box_w, box_w * 0.60);
+        let size = Vec2::new(box_w, box_w * aspect);
         // Take the whole row and draw into the middle of it. A left-aligned box
         // of this width left a third of the card empty on the right and pushed
         // the controller against its left edge.
@@ -206,6 +230,16 @@ impl PadPreview {
             Stroke::new(1.0, touch_edge),
             egui::StrokeKind::Middle,
         );
+        if self.touch_point && r.touch.pad_touched {
+            // Where, not just whether. The coordinates are already normalised
+            // over the active area, so this is a direct mapping and a finger
+            // crossing the pad leaves the dot crossing with it.
+            let dot = Pos2::new(
+                touch_rect.left() + r.touch.x.clamp(0.0, 1.0) * touch_rect.width(),
+                touch_rect.top() + r.touch.y.clamp(0.0, 1.0) * touch_rect.height(),
+            );
+            painter.circle_filled(dot, 3.5 * scale, ACCENT);
+        }
 
         // --- d-pad -------------------------------------------------------
         // Upper left, where it is on the pad. The preview had the d-pad on the

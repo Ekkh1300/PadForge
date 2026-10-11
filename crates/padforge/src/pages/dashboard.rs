@@ -46,6 +46,8 @@ fn live_input(ui: &mut egui::Ui, t: &padcore::engine::Telemetry) {
             output_buttons: padcore::output::XButtons(t.output.buttons),
             lightbar: colour_of(t.lightbar),
             dimmed: !t.connected || t.paused,
+            touch_point: false,
+            max_width: 310.0,
         };
         preview.show(ui);
         ui.add_space(SPACE_SM);
