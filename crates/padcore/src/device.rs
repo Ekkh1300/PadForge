@@ -285,7 +285,12 @@ impl DeviceReader {
     /// `want_serial` pins to one specific pad; `None` grabs whichever connects
     /// first. `poll_rate_hz` is a hint used only when no reports are pending.
     pub fn start(want_serial: Option<String>, poll_rate_hz: u32) -> Result<Self, hidapi::HidError> {
-        let api = Arc::new(hidapi::HidApi::new()?);
+        // Fail fast if the HID bus itself is unreachable, so a broken driver is
+        // reported once at startup instead of showing up as a pad that never
+        // appears. The handle is deliberately not kept: the reader thread
+        // enumerates afresh on every pass, and keeping one alive here is what
+        // used to pin the app to a list of devices that had since gone away.
+        hidapi::HidApi::new()?;
         let snapshot = Arc::new(Mutex::new(DeviceSnapshot::empty()));
         let calibration = Arc::new(Mutex::new(Calibration::default()));
         let output = Arc::new(OutputHealth::default());
@@ -302,7 +307,6 @@ impl DeviceReader {
                 let out_tx = Arc::clone(&out_tx);
                 move || {
                     run(
-                        api,
                         want_serial,
                         poll_rate_hz,
                         stop,
@@ -502,7 +506,6 @@ fn interface_delivers_reports(
 
 #[allow(clippy::too_many_arguments)]
 fn run(
-    api: Arc<hidapi::HidApi>,
     want_serial: Option<String>,
     poll_rate_hz: u32,
     stop: Arc<AtomicBool>,
@@ -514,6 +517,31 @@ fn run(
     let idle_backoff = interval_for_rate(poll_rate_hz);
 
     while !stop.load(Ordering::Relaxed) {
+        // Re-enumerate from scratch on every pass.
+        //
+        // `HidApi::device_list` answers from the list captured when the object
+        // was built, and the only ways to rebuild it are a fresh object or
+        // `refresh_devices`, which wants `&mut self` — unavailable through the
+        // `Arc` this thread used to be handed.
+        //
+        // The missing refresh was not a detail. It made the app blind to a
+        // change of transport: unplugging over Bluetooth and plugging in over
+        // USB left the list holding paths that no longer existed, so every pass
+        // found a candidate and then failed to open it with os error 2, forever,
+        // at the rescan interval. The pad was connected throughout.
+        //
+        // This only runs while no pad is open — the read loop below holds the
+        // connection — so paying for enumeration here costs nothing on the path
+        // that matters.
+        let api = match hidapi::HidApi::new() {
+            Ok(a) => a,
+            Err(e) => {
+                warn!("could not rescan for pads: {e}");
+                stop_wait(&stop, RESCAN_INTERVAL);
+                continue;
+            }
+        };
+
         // Collect every candidate rather than taking the first. A DS4 over
         // Bluetooth enumerates as more than one HID collection, and only one of
         // them carries gamepad reports. Opening a collection that carries none
