@@ -3,7 +3,7 @@ use crate::state::{Page, ToastLevel};
 use crate::theme::*;
 use crate::widgets::{self, PadPreview};
 use egui::epaint::MarginF32;
-use egui::{Align2, FontId, RichText, Stroke};
+use egui::{Align2, FontId, RichText, Stroke, Vec2};
 use padcore::engine::EngineCommand;
 
 #[allow(clippy::too_many_lines)]
@@ -11,7 +11,7 @@ pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
     let telemetry = ctx.engine.telemetry();
     ui.add_space(SPACE_SM);
     // --- status strip ---------------------------------------------------
-    status_strip(ui, &telemetry);
+    status_strip(ui, &telemetry, &ctx.state.frame_history);
     ui.add_space(SPACE_MD);
     // Two cards of one height, rather than two columns each stopping wherever
     // its own content happened to end: that ragged bottom edge is most of what
@@ -150,40 +150,26 @@ fn axes(ui: &mut egui::Ui, t: &padcore::engine::Telemetry) {
     });
 }
 
+/// The pages worth a tile, in the order they are shown.
+///
+/// A const rather than four calls written out by hand: a new page used to mean
+/// deciding afresh whether it belonged here, and forgetting one left the
+/// dashboard quietly pointing at a page nothing linked to.
+const TILES: &[Page] = &[
+    Page::Controller,
+    Page::Racing,
+    Page::Mapping,
+    Page::Output,
+    Page::Profiles,
+];
+
 /// One card per page worth of depth, each saying what is inside it. The old
 /// pair of plain buttons did not, which is why they read as decoration.
 fn navigate(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
-    ui.columns(4, |cols| {
-        // One statement per column: an array holding all four `&mut` at once
-        // is a single borrow as far as the checker is concerned.
-        tile(
-            &mut cols[0],
-            ctx,
-            Page::Controller,
-            "Controller",
-            "Sticks, deadzones, curves",
-        );
-        tile(
-            &mut cols[1],
-            ctx,
-            Page::Mapping,
-            "Mapping",
-            "Buttons, axes, formulas",
-        );
-        tile(
-            &mut cols[2],
-            ctx,
-            Page::Output,
-            "Output",
-            "Virtual pad, lightbar, vibration",
-        );
-        tile(
-            &mut cols[3],
-            ctx,
-            Page::Profiles,
-            "Profiles",
-            "Per-game and auto-match",
-        );
+    ui.columns(TILES.len(), |cols| {
+        for (col, page) in cols.iter_mut().zip(TILES) {
+            tile(col, ctx, *page, page.title(), page.blurb());
+        }
     });
 }
 
@@ -267,7 +253,7 @@ fn caption(ui: &mut egui::Ui, text: &str) {
 }
 
 /// Connection state, profile match, and the numbers that matter.
-fn status_strip(ui: &mut egui::Ui, t: &padcore::engine::Telemetry) {
+fn status_strip(ui: &mut egui::Ui, t: &padcore::engine::Telemetry, frame_history: &[f32]) {
     card().show(ui, |ui| {
         ui.horizontal(|ui| {
             // Connection dot plus label.
@@ -291,11 +277,7 @@ fn status_strip(ui: &mut egui::Ui, t: &padcore::engine::Telemetry) {
                         .size(13.0),
                 );
                 if let Some(transport) = t.transport {
-                    ui.label(
-                        RichText::new(transport.label())
-                            .color(TEXT_FAINT)
-                            .size(11.5),
-                    );
+                    widgets::transport_pill(ui, transport);
                 }
                 widgets::battery_pill(ui, &t.battery);
             }
@@ -315,6 +297,31 @@ fn status_strip(ui: &mut egui::Ui, t: &padcore::engine::Telemetry) {
                 if let Some(matched) = &t.auto_profile_matched {
                     pill(ui, &format!("auto: {matched}"), ACCENT);
                 }
+
+                // The trace takes whatever width is left between the status and
+                // the readout. A single number cannot show a stutter — one fine
+                // frame in the middle of three bad ones still reads as fine —
+                // and the whole reason this figure is here is to catch exactly
+                // that.
+                let width = ui.available_width().max(160.0);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(width, 28.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            RichText::new("timing")
+                                .color(TEXT_FAINT)
+                                .size(10.0)
+                                .strong(),
+                        );
+                        let trace = ui.available_width();
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(trace, 28.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| widgets::sparkline(ui, frame_history, 12.0, ACCENT),
+                        );
+                    },
+                );
             });
         });
         // Surface a missing virtual driver prominently: it is the one problem

@@ -184,10 +184,12 @@ fn edit_one_axis(ui: &mut egui::Ui, ctx: &mut super::Ctx, axis: Axis) {
             [LABEL_W, 22.0],
             egui::Label::new(RichText::new("curve").color(TEXT_MUTED)),
         );
+        let mut picked = false;
         egui::ComboBox::from_id_salt(("curve", axis))
             .selected_text(curve_label(&s.curve))
             .width(ui.available_width())
-            .show_ui(ui, |ui| curve_options(ui, &mut s.curve));
+            .show_ui(ui, |ui| picked = curve_options(ui, &mut s.curve));
+        changed |= picked;
     });
 
     ui.horizontal(|ui| {
@@ -215,32 +217,44 @@ fn edit_one_axis(ui: &mut egui::Ui, ctx: &mut super::Ctx, axis: Axis) {
             [LABEL_W, 22.0],
             egui::Label::new(RichText::new("smoothing").color(TEXT_MUTED)),
         );
+        let mut picked = false;
         egui::ComboBox::from_id_salt(("smooth", axis))
             .selected_text(smoothing_label(&s.smoothing))
             .width(ui.available_width())
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut s.smoothing, Smoothing::Off, "off");
-                ui.selectable_value(
-                    &mut s.smoothing,
-                    Smoothing::Exponential { alpha: 0.3 },
-                    "light",
-                );
-                ui.selectable_value(
-                    &mut s.smoothing,
-                    Smoothing::Exponential { alpha: 0.15 },
-                    "medium",
-                );
-                ui.selectable_value(
-                    &mut s.smoothing,
-                    Smoothing::Exponential { alpha: 0.05 },
-                    "heavy",
-                );
-                ui.selectable_value(
-                    &mut s.smoothing,
-                    Smoothing::WeightedAverage { window: 6 },
-                    "windowed average",
-                );
+                picked |= ui
+                    .selectable_value(&mut s.smoothing, Smoothing::Off, "off")
+                    .changed();
+                picked |= ui
+                    .selectable_value(
+                        &mut s.smoothing,
+                        Smoothing::Exponential { alpha: 0.3 },
+                        "light",
+                    )
+                    .changed();
+                picked |= ui
+                    .selectable_value(
+                        &mut s.smoothing,
+                        Smoothing::Exponential { alpha: 0.15 },
+                        "medium",
+                    )
+                    .changed();
+                picked |= ui
+                    .selectable_value(
+                        &mut s.smoothing,
+                        Smoothing::Exponential { alpha: 0.05 },
+                        "heavy",
+                    )
+                    .changed();
+                picked |= ui
+                    .selectable_value(
+                        &mut s.smoothing,
+                        Smoothing::WeightedAverage { window: 6 },
+                        "windowed average",
+                    )
+                    .changed();
             });
+        changed |= picked;
     });
 
     if changed {
@@ -455,33 +469,54 @@ fn curve_label(curve: &Curve) -> String {
     }
 }
 
-fn curve_options(ui: &mut egui::Ui, curve: &mut Curve) {
-    ui.selectable_value(curve, Curve::Linear, "Linear");
+/// The choices offered for one axis, returning whether the axis changed.
+///
+/// The return value is the whole point. Each of these edits `curve` through the
+/// closure and hands nothing back, so a caller that only watches its sliders
+/// never learns a curve was picked, skips the write, and the next frame reads
+/// the old value back off the profile. The selection then snaps back to what it
+/// was, which reads as "the app ignored me".
+fn curve_options(ui: &mut egui::Ui, curve: &mut Curve) -> bool {
+    let mut changed = false;
+    changed |= ui
+        .selectable_value(curve, Curve::Linear, "Linear")
+        .changed();
     for e in [1.5f32, 2.0, 3.0, 4.5] {
-        ui.selectable_value(
-            curve,
-            Curve::Exponential { exponent: e },
-            format!("Expo {e:.1}"),
-        );
+        changed |= ui
+            .selectable_value(
+                curve,
+                Curve::Exponential { exponent: e },
+                format!("Expo {e:.1}"),
+            )
+            .changed();
     }
-    ui.selectable_value(curve, Curve::smooth(), "Smooth S-curve");
-    ui.selectable_value(
-        curve,
-        Curve::Bezier {
-            x: [0.0, 0.2, 1.0],
-            y: [0.0, 0.95, 1.0],
-        },
-        "Fast early",
-    );
-    ui.selectable_value(
-        curve,
-        Curve::Bezier {
-            x: [0.0, 0.8, 1.0],
-            y: [0.0, 0.35, 1.0],
-        },
-        "Slow early",
-    );
-    ui.selectable_value(curve, Curve::Stepped { threshold: 0.5 }, "Stepped 50%");
+    changed |= ui
+        .selectable_value(curve, Curve::smooth(), "Smooth S-curve")
+        .changed();
+    changed |= ui
+        .selectable_value(
+            curve,
+            Curve::Bezier {
+                x: [0.0, 0.2, 1.0],
+                y: [0.0, 0.95, 1.0],
+            },
+            "Fast early",
+        )
+        .changed();
+    changed |= ui
+        .selectable_value(
+            curve,
+            Curve::Bezier {
+                x: [0.0, 0.8, 1.0],
+                y: [0.0, 0.35, 1.0],
+            },
+            "Slow early",
+        )
+        .changed();
+    changed |= ui
+        .selectable_value(curve, Curve::Stepped { threshold: 0.5 }, "Stepped 50%")
+        .changed();
+    changed
 }
 
 fn smoothing_label(s: &Smoothing) -> String {

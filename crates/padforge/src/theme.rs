@@ -37,6 +37,14 @@ pub const SUCCESS: Color32 = Color32::from_rgb(0x4A, 0xD9, 0x8C);
 pub const WARNING: Color32 = Color32::from_rgb(0xF2, 0xB0, 0x4A);
 pub const DANGER: Color32 = Color32::from_rgb(0xF2, 0x6D, 0x6D);
 
+/// Violet, reserved for the wireless transport.
+///
+/// Wired and wireless are the two things this app has to keep apart, and they
+/// used to be told apart by eleven-point faint text. Giving wireless its own
+/// hue means the two never read alike at a glance, which is the whole point of
+/// a status readout: it has to be answerable without reading.
+pub const WIRELESS: Color32 = Color32::from_rgb(0x9B, 0x8C, 0xF5);
+
 /// Colour for a battery charge fraction.
 pub fn battery_color(fraction: f32) -> Color32 {
     if fraction <= 0.15 {

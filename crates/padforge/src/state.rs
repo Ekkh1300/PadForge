@@ -13,6 +13,7 @@ use padcore::settings::Settings;
 pub enum Page {
     Dashboard,
     Controller,
+    Racing,
     Mapping,
     Gyro,
     Profiles,
@@ -24,6 +25,7 @@ impl Page {
     pub const ALL: &'static [Page] = &[
         Page::Dashboard,
         Page::Controller,
+        Page::Racing,
         Page::Mapping,
         Page::Gyro,
         Page::Profiles,
@@ -35,6 +37,7 @@ impl Page {
         match self {
             Page::Dashboard => "Dashboard",
             Page::Controller => "Controller",
+            Page::Racing => "Racing",
             Page::Mapping => "Mapping",
             Page::Gyro => "Motion",
             Page::Profiles => "Profiles",
@@ -49,11 +52,26 @@ impl Page {
         match self {
             Page::Dashboard => "01",
             Page::Controller => "02",
-            Page::Mapping => "03",
-            Page::Gyro => "04",
-            Page::Profiles => "05",
-            Page::Output => "06",
-            Page::Settings => "07",
+            Page::Racing => "03",
+            Page::Mapping => "04",
+            Page::Gyro => "05",
+            Page::Profiles => "06",
+            Page::Output => "07",
+            Page::Settings => "08",
+        }
+    }
+
+    /// One-line description shown on the dashboard's navigation tiles.
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Page::Dashboard => "Health, live pad, quick controls",
+            Page::Controller => "Sticks, deadzones, curves",
+            Page::Racing => "Steering feel and pedals",
+            Page::Mapping => "Buttons, axes, formulas",
+            Page::Gyro => "Motion aim and swipe",
+            Page::Profiles => "Per-game and auto-match",
+            Page::Output => "Virtual pad, lightbar, vibration",
+            Page::Settings => "Connection, slots, startup",
         }
     }
 }

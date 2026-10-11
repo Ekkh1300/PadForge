@@ -2,6 +2,7 @@
 
 use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 
+use padcore::formula::Inputs;
 use padcore::output::XButtons;
 use padcore::report::{Buttons, Ds4Report};
 
@@ -693,6 +694,115 @@ pub fn battery_pill(ui: &mut egui::Ui, battery: &padcore::report::Battery) {
     pill(ui, &text, colour);
 }
 
+/// How the pad is plugged in, given its own colour and its own drawn glyph.
+///
+/// Wired and wireless used to be told apart by eleven-point faint text, which
+/// is the one distinction this app cannot afford to make subtle: a pad that has
+/// changed transport is exactly the thing a user notices before we do. Each
+/// transport now has a hue that no other status uses, so the answer is
+/// available without reading.
+pub fn transport_pill(ui: &mut egui::Ui, transport: padcore::report::Transport) {
+    use padcore::report::Transport;
+    const SIZE: f32 = 11.5;
+    const PAD_X: f32 = 9.0;
+    const PAD_Y: f32 = 3.0;
+    const ICON_W: f32 = 8.0;
+    const GAP: f32 = 5.0;
+
+    let (label, colour) = match transport {
+        Transport::Usb => ("USB", ACCENT),
+        Transport::Bluetooth => ("Bluetooth", WIRELESS),
+    };
+    let font_id = FontId::proportional(SIZE);
+    // Measured through the painter rather than `Ui::fonts`, whose reader hands
+    // out a shared reference: laying text out needs the mutable one.
+    let text = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font_id.clone(), colour)
+        .size();
+    let height = PAD_Y * 2.0 + text.y;
+    let width = PAD_X * 2.0 + ICON_W + GAP + text.x;
+
+    // Reserved at an exact size rather than wrapped in a `Frame`. A frame added
+    // inside the header's right-to-left row expands to whatever width is still
+    // free, which drew this badge as a strip running the full width of the
+    // window. Asking for the size outright makes it the same shape wherever it
+    // lands, which is the only way a badge can be trusted in two different
+    // layouts.
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, RADIUS_PILL, colour.gamma_multiply(0.14));
+    painter.rect_stroke(
+        rect,
+        RADIUS_PILL,
+        Stroke::new(1.0, colour.gamma_multiply(0.45)),
+        egui::StrokeKind::Middle,
+    );
+
+    let icon = Rect::from_center_size(
+        Pos2::new(rect.left() + PAD_X + ICON_W * 0.5, rect.center().y),
+        Vec2::new(ICON_W, height - PAD_Y * 2.0),
+    );
+    transport_icon(&painter, icon, transport, colour);
+    painter.text(
+        Pos2::new(icon.right() + GAP, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font_id,
+        colour,
+    );
+}
+
+/// Draw a transport glyph inside `rect`: a plug for USB, the Bluetooth rune for
+/// Bluetooth.
+///
+/// The rune is one continuous stroke — down-right, down-left across the stave,
+/// to the bottom, back up the stave, then the mirrored chevron — so it is a
+/// single polyline rather than an approximation. No font PadForge ships carries
+/// a Bluetooth symbol, and a missing glyph would render as a box, which is
+/// worse than no icon at all.
+fn transport_icon(
+    painter: &egui::Painter,
+    rect: Rect,
+    transport: padcore::report::Transport,
+    colour: Color32,
+) {
+    use padcore::report::Transport;
+    let c = rect.center();
+    let (w, h) = (rect.width() * 0.5, rect.height() * 0.5);
+    let point = |x: f32, y: f32| Pos2::new(c.x + x * w, c.y + y * h);
+    let stroke = Stroke::new(1.35, colour);
+
+    match transport {
+        Transport::Bluetooth => {
+            let pts = vec![
+                point(0.0, -1.0),
+                point(0.62, -0.42),
+                point(-0.62, 0.42),
+                point(0.0, 1.0),
+                point(0.0, -1.0),
+                point(0.62, 0.42),
+                point(-0.62, -0.42),
+            ];
+            painter.add(egui::Shape::line(pts, stroke));
+        }
+        // A plug rather than the USB trident: the trident needs curves to read
+        // correctly at this size, and a cable with a connector body survives
+        // being nine pixels wide.
+        Transport::Usb => {
+            painter.line_segment([point(0.0, 1.0), point(0.0, -0.15)], stroke);
+            let body = Rect::from_center_size(
+                point(0.0, -0.55),
+                Vec2::new(rect.width() * 0.9, rect.height() * 0.7),
+            );
+            painter.rect_stroke(body, 2.0, stroke, egui::StrokeKind::Middle);
+            let pin = Stroke::new(1.35, colour);
+            painter.line_segment([point(-0.28, -0.85), point(-0.28, -0.62)], pin);
+            painter.line_segment([point(0.28, -0.85), point(0.28, -0.62)], pin);
+        }
+    }
+}
+
 /// A horizontal sparkline of recent values, for gyro and latency readouts.
 pub fn sparkline(ui: &mut egui::Ui, values: &[f32], range: f32, colour: Color32) {
     let height = 34.0;
@@ -721,11 +831,133 @@ pub fn sparkline(ui: &mut egui::Ui, values: &[f32], range: f32, colour: Color32)
         })
         .collect();
 
-    // One polyline rather than N segments, so the tessellator joins them cleanly.
+    // One polyline rather than N segments, so the tessellator joins them
+    // cleanly. Open, not closed: a closed path draws a line from the newest
+    // sample back to the oldest, which for a latency trace is a straight bar
+    // across the plot that reads as data but is not.
     if points.len() >= 2 {
         let stroke = egui::epaint::PathStroke::new(1.6, colour);
-        painter.add(egui::Shape::closed_line(points, stroke));
+        painter.add(egui::Shape::line(points, stroke));
     }
+}
+
+/// The response curve of one axis: stick position along the bottom, what
+/// actually reaches the game up the side, across the full travel of both.
+///
+/// Drawn rather than described because the shape is the whole point. A pair of
+/// sliders for deadzone and sensitivity cannot say what their combination does,
+/// and racing is the case where the combination is the thing being tuned — a
+/// driver feels a curve, not two numbers. This is also the only view in the app
+/// that shows the two halves of a bipolar axis agreeing with each other.
+pub fn response_curve(
+    ui: &mut egui::Ui,
+    settings: &padcore::profile::AxisSettings,
+    live: f32,
+    height: f32,
+) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, RADIUS_SM, BACKDROP);
+
+    const PAD: f32 = 10.0;
+    let plot = Rect::from_min_max(
+        Pos2::new(rect.min.x + PAD, rect.min.y + PAD),
+        Pos2::new(rect.max.x - PAD, rect.max.y - PAD),
+    );
+    if plot.width() < 8.0 || plot.height() < 8.0 {
+        return;
+    }
+    let at = |x: f32, y: f32| {
+        Pos2::new(
+            plot.center().x + x * plot.width() * 0.5,
+            plot.center().y - y * plot.height() * 0.5,
+        )
+    };
+
+    // The identity line, so a reshaped curve has something to be measured
+    // against: above it the axis is quicker off centre, below it slower.
+    painter.line_segment([at(-1.0, -1.0), at(1.0, 1.0)], Stroke::new(1.0, BORDER));
+    // Centre guides, so the dead zone reads as a region rather than as a slope
+    // that happens to be flat.
+    painter.line_segment([at(0.0, -1.0), at(0.0, 1.0)], Stroke::new(1.0, BORDER));
+    painter.line_segment([at(-1.0, 0.0), at(1.0, 0.0)], Stroke::new(1.0, BORDER));
+
+    const STEPS: u32 = 96;
+    let formula = settings.formula();
+    let mut points = Vec::with_capacity(STEPS as usize + 1);
+    for i in 0..=STEPS {
+        let x = (i as f32 / STEPS as f32) * 2.0 - 1.0;
+        // A fresh filter per sample: smoothing is stateful, and letting it carry
+        // between samples would draw a curve the user can never actually get.
+        let mut filter = settings.to_filter();
+        let y = filter.apply_with_formula(x, formula.as_ref(), &Inputs::default());
+        points.push(at(x, y.clamp(-1.0, 1.0)));
+    }
+    painter.add(egui::Shape::line(
+        points,
+        egui::epaint::PathStroke::new(2.0, ACCENT),
+    ));
+
+    // Where the pad actually is right now, so the trace and the live reading can
+    // be checked against each other instead of taken on trust.
+    let mut filter = settings.to_filter();
+    let shaped =
+        filter.apply_with_formula(live.clamp(-1.0, 1.0), formula.as_ref(), &Inputs::default());
+    let dot = at(live.clamp(-1.0, 1.0), shaped.clamp(-1.0, 1.0));
+    glow(&painter, dot, 16.0, ACCENT);
+    painter.circle_filled(dot, 3.5, TEXT);
+}
+
+/// A steering wheel, turned to wherever the stick currently is.
+///
+/// Drawn rather than reduced to a number because the thing being tuned on the
+/// racing page is a feel, and the fastest way to check a feel is to watch the
+/// wheel return to centre the way a car would.
+pub fn steering_wheel(ui: &mut egui::Ui, angle: f32, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(size, size), Sense::hover());
+    let painter = ui.painter_at(rect);
+    let c = rect.center();
+    let r = (size * 0.5 - 6.0).max(10.0);
+    // A stick reaches full lock at ninety degrees either way, so the whole
+    // travel is half a turn. That is what makes a quick correction look quick.
+    let a = angle.clamp(-1.0, 1.0).to_radians() * 90.0;
+    let (sin, cos) = (a.sin(), a.cos());
+    // Rotate a point from wheel space into screen space.
+    let at = |x: f32, y: f32| Pos2::new(c.x + x * cos - y * sin, c.y + x * sin + y * cos);
+
+    glow(&painter, c, r * 1.6, ACCENT);
+    painter.circle_filled(c, r, BACKDROP);
+    painter.circle_stroke(c, r, Stroke::new(2.5, ACCENT.gamma_multiply(0.7)));
+
+    // The rim is a bar rather than a ring: a ring looks the same whichever way
+    // it is turned, which is the one thing this has to show.
+    painter.line_segment([at(-r, 0.0), at(r, 0.0)], Stroke::new(5.0, TEXT_MUTED));
+    painter.line_segment(
+        [at(-r * 0.62, 0.0), at(-r * 0.2, r * 0.55)],
+        Stroke::new(2.5, TEXT_FAINT),
+    );
+    painter.line_segment(
+        [at(r * 0.62, 0.0), at(r * 0.2, r * 0.55)],
+        Stroke::new(2.5, TEXT_FAINT),
+    );
+    painter.circle_filled(c, r * 0.22, SURFACE_HOVER);
+    painter.circle_stroke(c, r * 0.22, Stroke::new(1.5, ACCENT));
+
+    // Straight ahead, marked, so centre is a position rather than a guess.
+    painter.line_segment([at(0.0, -r), at(0.0, -r + 7.0)], Stroke::new(3.0, ACCENT));
+}
+
+/// A preset chip: one shape, one click, rounded like the status pills so the
+/// racing page does not introduce a shape the rest of the app never uses.
+pub fn preset_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).color(TEXT).size(13.0))
+            .fill(SURFACE_HOVER)
+            .stroke(Stroke::new(1.0, ACCENT_DIM))
+            .corner_radius(RADIUS_PILL)
+            .min_size(Vec2::new(0.0, 30.0)),
+    )
 }
 
 /// An HSV colour picker, since egui has no built-in one.

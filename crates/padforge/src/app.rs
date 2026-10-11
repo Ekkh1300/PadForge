@@ -11,6 +11,7 @@ use crate::pages::{self, Ctx};
 use crate::state::{AppState, Page, ToastLevel};
 use crate::theme::*;
 use crate::tray::{self, TrayIcon, TrayInbox};
+use crate::widgets;
 
 /// Accent colour, shared with the tray icon.
 pub const ACCENT: Color32 = Color32::from_rgb(0x35, 0xD0, 0xE8);
@@ -274,6 +275,7 @@ impl App {
                         match page {
                             Page::Dashboard => pages::dashboard::draw(ui, &mut page_ctx),
                             Page::Controller => pages::controller::draw(ui, &mut page_ctx),
+                            Page::Racing => pages::racing::draw(ui, &mut page_ctx),
                             Page::Mapping => pages::mapping::draw(ui, &mut page_ctx),
                             Page::Gyro => pages::gyro::draw(ui, &mut page_ctx),
                             Page::Profiles => pages::profiles::draw(ui, &mut page_ctx),
@@ -337,6 +339,12 @@ impl App {
                 } else {
                     (SUCCESS, "Connected")
                 };
+                // The transport sits beside the state rather than inside it: a
+                // pad can be connected over either, and which one it is now is
+                // the fact a user notices changing before the app does.
+                if let Some(transport) = t.transport {
+                    widgets::transport_pill(ui, transport);
+                }
                 pill(ui, label, colour);
             });
         });

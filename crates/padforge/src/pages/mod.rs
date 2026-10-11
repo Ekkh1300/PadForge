@@ -6,6 +6,7 @@ pub mod gyro;
 pub mod mapping;
 pub mod output;
 pub mod profiles;
+pub mod racing;
 pub mod settings;
 
 use padcore::engine::EngineHandle;
