@@ -100,6 +100,72 @@ impl SlotChoice {
     }
 }
 
+/// How a steering wheel is set up, when one is being used.
+///
+/// This is hardware, not a way of playing, so it lives in the settings and not
+/// in a profile: the same pedals are bound to the same targets in every game,
+/// and re-learning them per game would be the very work this exists to avoid.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct WheelSettings {
+    /// Drive the virtual pad from the wheel rather than from the pad.
+    ///
+    /// Separate from choosing a wheel, because a wheel that is picked and
+    /// switched off must stay picked. Losing a binding because the wheel was
+    /// unplugged for an evening is the kind of thing that makes an app feel
+    /// like it is not listening.
+    pub enabled: bool,
+
+    /// The wheel, by the OS path it was when it was chosen.
+    ///
+    /// Not an index, because an index is an enumeration detail and the list
+    /// changes the moment anything is plugged in. The path is what the OS
+    /// calls this device, and it stays put while the device does.
+    pub device: Option<String>,
+
+    /// What each control on that wheel is asked to do.
+    #[serde(default)]
+    pub bindings: Vec<crate::wheel::WheelBinding>,
+}
+
+impl WheelSettings {
+    /// Whether a steering control has been learned yet.
+    ///
+    /// Worth asking separately from "are there any bindings", because a wheel
+    /// with pedals bound but no steering is a setup that will turn badly, and
+    /// the interface should say so rather than drive on.
+    pub fn has_steering(&self) -> bool {
+        self.bindings
+            .iter()
+            .any(|b| b.target == crate::wheel::WheelTarget::Steer)
+    }
+
+    /// Remove whatever is already bound to `target`, so adding a new binding
+    /// for it cannot leave two claiming one slot.
+    ///
+    /// The fold already resolves that by taking the first, so this is not
+    /// needed for correctness — it is needed so what the list shows and what
+    /// the fold does are the same thing.
+    pub fn unbind(&mut self, target: crate::wheel::WheelTarget) {
+        self.bindings.retain(|b| b.target != target);
+    }
+
+    /// Clamp anything that could have been hand-edited into a value the axis
+    /// cannot honour.
+    ///
+    /// A dead zone of 1.0 is the one worth checking: it silences a control at
+    /// every position including full travel, which is not a dead zone but a
+    /// disconnection, and it is exactly the sort of thing a hand-edited file
+    /// produces.
+    fn sanitise(&mut self) {
+        for binding in &mut self.bindings {
+            binding.deadzone = binding.deadzone.clamp(0.0, 0.95);
+            // A zero gain is a control that reports movement and publishes
+            // none, which is the same trap as the dead zone above.
+            binding.sensitivity = binding.sensitivity.max(0.0);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub device: DeviceSelection,
@@ -107,6 +173,15 @@ pub struct Settings {
     pub output_mode: OutputMode,
     /// Which XInput controller the virtual pad is published as.
     pub virtual_slot: SlotChoice,
+
+    /// Steering-wheel input, for players who drive rather than play.
+    ///
+    /// Kept here and not in a profile because a wheel is a piece of hardware,
+    /// not a way of playing: the same pedals are bound to the same targets in
+    /// every game, and re-learning them per game would be the work this exists
+    /// to avoid.
+    #[serde(default)]
+    pub wheel: WheelSettings,
 
     /// Stop publishing reports without unloading anything.
     pub paused: bool,
@@ -142,6 +217,7 @@ impl Default for Settings {
             poll_rate_hz: 250,
             output_mode: OutputMode::Xbox360,
             virtual_slot: SlotChoice::Auto,
+            wheel: WheelSettings::default(),
             paused: false,
             start_minimized: false,
             minimize_on_close: true,
@@ -170,6 +246,7 @@ impl Settings {
         if matches!(self.virtual_slot, SlotChoice::Player(i) if i >= SLOT_COUNT) {
             self.virtual_slot = SlotChoice::Auto;
         }
+        self.wheel.sanitise();
         self
     }
 
@@ -418,5 +495,119 @@ mod tests {
     fn autostart_command_is_quoted() {
         let cmd = autostart_command();
         assert!(cmd.starts_with('"'), "command must be quoted: {cmd}");
+    }
+
+    // -- the wheel -----------------------------------------------------------
+
+    use crate::wheel::{ControlId, WheelBinding, WheelTarget};
+
+    const PEDAL: ControlId = ControlId {
+        page: 0x01,
+        usage: 0x35,
+    };
+    const WHEEL_AXIS: ControlId = ControlId {
+        page: 0x01,
+        usage: 0x38,
+    };
+
+    #[test]
+    fn wheel_settings_load_in_a_settings_file_that_never_had_them() {
+        // Every settings file written before the wheel existed is still a valid
+        // settings file, or upgrading costs the player every setting they had.
+        //
+        // Built from the default rather than typed out, so the check does not
+        // quietly stop meaning "a file from before the wheel" the next time a
+        // field is added to `Settings`.
+        let mut value = serde_json::to_value(Settings::default()).expect("default serialises");
+        value
+            .as_object_mut()
+            .expect("settings are an object")
+            .remove("wheel");
+
+        let loaded: Settings = serde_json::from_value(value).expect("older settings still load");
+        assert!(!loaded.wheel.enabled);
+        assert!(loaded.wheel.device.is_none());
+        assert!(loaded.wheel.bindings.is_empty());
+    }
+
+    #[test]
+    fn a_wheel_survives_a_round_trip_through_the_settings_file() {
+        let mut s = Settings::default();
+        s.wheel.enabled = true;
+        s.wheel.device = Some(r"\\?\hid#vid_046d&pid_c24f".into());
+        s.wheel
+            .bindings
+            .push(WheelBinding::new(WheelTarget::Throttle, PEDAL));
+
+        let json = serde_json::to_string(&s).expect("serialize");
+        let back: Settings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.wheel, s.wheel);
+    }
+
+    #[test]
+    fn a_hand_edited_dead_zone_cannot_silence_a_control() {
+        // A dead zone of 1.0 silences the control at every position including
+        // full travel. That is a disconnection, not a dead zone, and it is
+        // exactly what a hand-edited file produces by accident.
+        let mut s = Settings::default();
+        let mut binding = WheelBinding::new(WheelTarget::Steer, WHEEL_AXIS);
+        binding.deadzone = 1.0;
+        s.wheel.bindings.push(binding);
+        s.wheel.enabled = true;
+
+        let s = s.sanitised();
+        assert!(s.wheel.bindings[0].deadzone <= 0.95);
+        // And it must still be usable at full travel, which is the whole point.
+        assert!(
+            s.wheel.bindings[0].shape(1.0).abs() > 0.9,
+            "must still reach full lock"
+        );
+    }
+
+    #[test]
+    fn a_negative_gain_becomes_a_gain_of_zero() {
+        // A negative gain would flip the axis, which is what `invert` is for
+        // and is never what a file with a minus sign in it meant to say.
+        let mut s = Settings::default();
+        let mut binding = WheelBinding::new(WheelTarget::Throttle, PEDAL);
+        binding.sensitivity = -2.0;
+        s.wheel.bindings.push(binding);
+
+        let s = s.sanitised();
+        assert_eq!(s.wheel.bindings[0].sensitivity, 0.0);
+    }
+
+    #[test]
+    fn unbinding_a_target_leaves_the_others_alone() {
+        // The learner replaces a target by unbinding it first, so a bug here
+        // would quietly discard a pedal the player had already set up.
+        let mut w = WheelSettings::default();
+        w.bindings
+            .push(WheelBinding::new(WheelTarget::Throttle, PEDAL));
+        w.bindings
+            .push(WheelBinding::new(WheelTarget::Brake, PEDAL));
+        w.bindings
+            .push(WheelBinding::new(WheelTarget::Steer, WHEEL_AXIS));
+
+        w.unbind(WheelTarget::Brake);
+        assert_eq!(w.bindings.len(), 2);
+        assert!(w.bindings.iter().all(|b| b.target != WheelTarget::Brake));
+        // The other two are untouched, not swept up with it.
+        assert!(w.bindings.iter().any(|b| b.target == WheelTarget::Throttle));
+        assert!(w.has_steering());
+    }
+
+    #[test]
+    fn a_setup_without_steering_says_so_rather_than_driving_on() {
+        // A wheel with pedals bound and no steering will turn badly, and the
+        // only sign would otherwise be a car that will not change direction.
+        let mut w = WheelSettings::default();
+        assert!(!w.has_steering());
+        w.bindings
+            .push(WheelBinding::new(WheelTarget::Throttle, PEDAL));
+        assert!(!w.has_steering(), "pedals are not steering");
+        w.bindings
+            .push(WheelBinding::new(WheelTarget::Steer, WHEEL_AXIS));
+        assert!(w.has_steering());
     }
 }

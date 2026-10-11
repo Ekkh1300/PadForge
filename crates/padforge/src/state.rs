@@ -140,6 +140,31 @@ pub struct AppState {
     pub devices: Vec<DeviceInfo>,
     pub devices_scanned_at: Option<Instant>,
 
+    /// Cached steering-wheel list, refreshed on demand.
+    ///
+    /// A separate list from `devices` because the two are answering different
+    /// questions: `devices` is "which pad should be watched", this is "which of
+    /// the things that report as a joystick is the wheel", and the second
+    /// cannot be answered by filtering the first.
+    pub wheels: Vec<padcore::wheel::WheelDevice>,
+    pub wheels_scanned_at: Option<Instant>,
+
+    /// The wheel target waiting to be learned, if any.
+    ///
+    /// Set by a button and cleared by the reader, so the whole flow lives
+    /// across frames without the page having to be the thing that holds it.
+    pub learning: Option<padcore::wheel::WheelTarget>,
+    /// When learning started, so a player who walked away is not left staring
+    /// at a prompt forever.
+    pub learning_started: Option<Instant>,
+    /// Where every control sat when learning began.
+    ///
+    /// Kept so the learner can tell "the player moved something" from "this
+    /// control has always read a little off centre". Without it, a pedal that
+    /// rests at a few percent would be picked up before the player had touched
+    /// anything, and the throttle would be bound to the brake.
+    pub learning_rest: Vec<(padcore::wheel::ControlId, f32)>,
+
     /// True while dragging the main window, so we skip expensive redraws.
     pub dragging: bool,
 
@@ -173,6 +198,11 @@ impl AppState {
             profiles_dirty: true,
             devices: Vec::new(),
             devices_scanned_at: None,
+            wheels: Vec::new(),
+            wheels_scanned_at: None,
+            learning: None,
+            learning_started: None,
+            learning_rest: Vec::new(),
             dragging: false,
             show_advanced_mapping: false,
             show_gyro_advanced: false,

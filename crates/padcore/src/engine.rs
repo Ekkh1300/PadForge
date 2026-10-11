@@ -36,6 +36,14 @@ use crate::touchpad::{TouchpadMode, TouchpadProcessor};
 /// Telemetry publish rate. Faster than this and the UI cannot keep up anyway.
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(16);
 
+/// How long to wait before looking again for a steering wheel that is not
+/// there.
+///
+/// Long enough that an unplugged wheel is not costing an enumeration and a
+/// failed open every frame, short enough that plugging one in is felt rather
+/// than noticed on the next restart.
+const WHEEL_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
 /// How the rumble test feels: both motors at full, for long enough to notice
 /// without being long enough to feel like something has hung.
 const TEST_RUMBLE_HEAVY: u8 = 255;
@@ -96,6 +104,41 @@ pub struct Telemetry {
     pub gyro_smoothing: GyroSmoothingParams,
     pub calibration: Calibration,
     pub vigem_error: Option<String>,
+
+    /// What a steering wheel is reporting, when one is chosen and attached.
+    ///
+    /// Kept apart from the pad's `report` rather than folded into it, because
+    /// the two are not the same shape: a wheel has whatever controls its driver
+    /// declared and no fixed layout, so it carries its own names and values
+    /// instead of pretending to be a DualShock.
+    pub wheel: Option<WheelTelemetry>,
+}
+
+/// One control on a steering wheel, as the Racing page shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WheelControl {
+    /// Identity of the control — what a binding stores, and what survives the
+    /// wheel being unplugged and plugged back in.
+    pub id: crate::wheel::ControlId,
+    /// What the driver calls it: "Z", "Rz", "button 4".
+    pub label: String,
+    /// Where it currently sits, 0..=1.
+    pub value: f32,
+}
+
+/// One frame of steering-wheel input, as the Racing page needs to show it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WheelTelemetry {
+    /// What the driver calls the device.
+    pub label: String,
+    /// Every control the driver declared, with where it currently sits.
+    ///
+    /// Carries the id as well as the name because the picker is asking "which
+    /// of these is your throttle" and only the id can answer it — a name is a
+    /// label a driver made up and may reuse.
+    pub controls: Vec<WheelControl>,
+    /// What the bindings made of that frame.
+    pub shaped: crate::wheel::Shaped,
 }
 
 /// The smoothing knobs, unpacked from [`GyroSmoothing`].
@@ -147,6 +190,7 @@ impl Default for Telemetry {
             },
             calibration: Calibration::default(),
             vigem_error: None,
+            wheel: None,
         }
     }
 }
@@ -286,6 +330,24 @@ struct Engine {
     store: ProfileStore,
 
     reader: Option<DeviceReader>,
+    /// The steering wheel, when one is chosen and has been opened.
+    ///
+    /// Held rather than reopened per frame because opening one is two round
+    /// trips to the driver, and because a reader owns a handle that must not be
+    /// handed out twice.
+    wheel: Option<crate::wheel::WheelReader>,
+    /// When to next look for a wheel that is not currently open.
+    ///
+    /// Rate-limited rather than attempted every frame: a wheel that is not
+    /// attached would otherwise cost an enumeration, a failed open and a fresh
+    /// `HidApi` sixty times a second for the whole session.
+    wheel_retry: std::time::Instant,
+    /// The most recent wheel frame, kept so the Racing page can show it and so
+    /// a wheel that has simply stopped reporting does not zero itself out.
+    wheel_frame: Option<WheelTelemetry>,
+    /// The most recent reason the wheel would not open. Surfaced once, because
+    /// a wheel that is unplugged should say so and then stop saying so.
+    wheel_error: Option<String>,
     backend: Box<dyn OutputBackend>,
     vigem_error: Option<String>,
 
@@ -370,6 +432,10 @@ impl Engine {
             settings,
             store,
             reader: None,
+            wheel: None,
+            wheel_retry: std::time::Instant::now(),
+            wheel_frame: None,
+            wheel_error: None,
             backend: Box::new(NullBackend::default()),
             vigem_error: None,
             left_x: AxisFilter::new(),
@@ -469,6 +535,118 @@ impl Engine {
                 EventLevel::Error,
                 format!("Could not reach the HID bus: {e}"),
             ),
+        }
+    }
+
+    /// Read the steering wheel, if one is chosen, and answer with the state it
+    /// wants the virtual pad to be in.
+    ///
+    /// `None` means "carry on as you were": no wheel is chosen, or the wheel is
+    /// not attached, or it failed to open. Each of those leaves the pad driving
+    /// exactly as it did before the wheel existed, which is the only behaviour
+    /// that cannot strand a player with a controller that does nothing.
+    ///
+    /// A wheel that is open and quiet returns the state it last reported rather
+    /// than nothing. A wheel at rest reports nothing new for as long as it sits
+    /// untouched, and reading that as "let go of everything" would make the
+    /// steering snap to centre the moment the player stops turning — which is
+    /// precisely when they are trying to hold a line through a corner.
+    fn poll_wheel(&mut self) -> Option<GamepadState> {
+        if !self.settings.wheel.enabled {
+            // Turning the wheel off must hand control back to the pad at once.
+            // Leaving the last frame behind would mean the pad kept reporting a
+            // steering lock nobody was holding.
+            self.wheel = None;
+            self.wheel_frame = None;
+            return None;
+        }
+
+        let path = self.settings.wheel.device.clone()?;
+
+        if self.wheel.is_none() {
+            // Rate-limited: an unplugged wheel would otherwise cost an
+            // enumeration and a failed open sixty times a second, forever.
+            if Instant::now() < self.wheel_retry {
+                return None;
+            }
+            self.wheel_retry = Instant::now() + WHEEL_RETRY_INTERVAL;
+
+            // The device is looked up by path from a fresh enumeration rather
+            // than kept, because a `WheelDevice` is a description of something
+            // that may since have been unplugged, and the reader needs the
+            // layout of the one that is actually there.
+            let found = crate::wheel::devices().into_iter().find(|d| d.path == path);
+            let Some(device) = found else {
+                self.note_wheel_error(None, "the wheel is not attached");
+                return None;
+            };
+
+            match crate::wheel::WheelReader::open(&device) {
+                Ok(reader) => {
+                    info!(label = %device.label, "steering wheel attached");
+                    self.wheel_error = None;
+                    self.wheel = Some(reader);
+                }
+                Err(err) => {
+                    self.note_wheel_error(Some(&device.label), &err.to_string());
+                    return None;
+                }
+            }
+        }
+
+        let reader = self.wheel.as_mut()?;
+        match reader.poll() {
+            Ok(Some(values)) => {
+                // Labels captured while the controls are still in hand, so the
+                // UI never has to open the wheel again to name what it shows.
+                let controls = reader
+                    .controls()
+                    .iter()
+                    .filter_map(|c| {
+                        let (_, value) = values.iter().find(|(id, _)| *id == c.id)?;
+                        Some(WheelControl {
+                            id: c.id,
+                            label: c.label.clone(),
+                            value: *value,
+                        })
+                    })
+                    .collect();
+                let label = reader.label().to_string();
+                let shaped = crate::wheel::shape(&values, &self.settings.wheel.bindings);
+                self.wheel_frame = Some(WheelTelemetry {
+                    label,
+                    controls,
+                    shaped,
+                });
+                Some(shaped.to_gamepad())
+            }
+            // Nothing new since the last report, which is the normal state of a
+            // wheel at rest. Keep driving what it last said.
+            Ok(None) => self.wheel_frame.as_ref().map(|f| f.shaped.to_gamepad()),
+            Err(err) => {
+                // Dropping the reader closes the handle, so the retry below
+                // reopens cleanly when the wheel comes back.
+                self.wheel = None;
+                self.wheel_frame = None;
+                self.wheel_retry = Instant::now() + WHEEL_RETRY_INTERVAL;
+                self.note_wheel_error(None, &err.to_string());
+                None
+            }
+        }
+    }
+
+    /// Record a reason the wheel is not driving, once, and log every one.
+    fn note_wheel_error(&mut self, label: Option<&str>, reason: &str) {
+        warn!(
+            label = label.unwrap_or("wheel"),
+            "steering wheel unavailable: {reason}"
+        );
+        let text = match label {
+            Some(label) => format!("{label}: {reason}"),
+            None => format!("Steering wheel: {reason}"),
+        };
+        if self.wheel_error.as_deref() != Some(text.as_str()) {
+            self.wheel_error = Some(text);
         }
     }
 
@@ -691,7 +869,23 @@ impl Engine {
 
         self.drive_output(&snap);
 
-        let active = if snap.connected && !self.settings.paused {
+        // The wheel is polled here rather than in its own thread because it
+        // shares the one output the pad wants: two threads both submitting
+        // would fight over the same virtual pad, and the loser would be
+        // whichever finished last, which is not a rule anybody could reason
+        // about. Reading it takes one call and gives the freshest report.
+        let wheel = self.poll_wheel();
+
+        let active = if self.settings.paused {
+            self.backend.submit(GamepadState::neutral());
+            Vec::new()
+        } else if let Some(state) = wheel {
+            // The wheel is the source, so whatever the pad says is irrelevant
+            // — and it may say nothing at all, because driving from a wheel
+            // must work with no pad connected.
+            self.backend.submit(state);
+            Vec::new()
+        } else if snap.connected {
             let state = self.translate(&snap.report, &profile, dt);
             self.backend.submit(state);
             active_control_names(&snap.report, &profile)
@@ -748,6 +942,7 @@ impl Engine {
                 gyro_smoothing: smoothing_params(&profile.gyro),
                 calibration,
                 vigem_error: self.vigem_error.clone(),
+                wheel: self.wheel_frame.clone(),
             };
             // try_send means a busy UI drops a visual frame instead of stalling
             // the input pipeline.

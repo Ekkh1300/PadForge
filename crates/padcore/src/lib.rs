@@ -20,6 +20,7 @@ pub mod profile;
 pub mod report;
 pub mod settings;
 pub mod touchpad;
+pub mod wheel;
 pub mod xinput;
 
 pub use engine::{spawn, EngineCommand, EngineEvent, EngineHandle, EventLevel, Telemetry};
