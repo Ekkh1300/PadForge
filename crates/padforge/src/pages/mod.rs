@@ -8,6 +8,7 @@ pub mod output;
 pub mod profiles;
 pub mod racing;
 pub mod settings;
+pub mod test;
 
 use padcore::engine::EngineHandle;
 

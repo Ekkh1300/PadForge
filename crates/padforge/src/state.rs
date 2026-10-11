@@ -12,6 +12,7 @@ use padcore::settings::Settings;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Dashboard,
+    Test,
     Controller,
     Racing,
     Mapping,
@@ -24,6 +25,7 @@ pub enum Page {
 impl Page {
     pub const ALL: &'static [Page] = &[
         Page::Dashboard,
+        Page::Test,
         Page::Controller,
         Page::Racing,
         Page::Mapping,
@@ -36,6 +38,7 @@ impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Page::Dashboard => "Dashboard",
+            Page::Test => "Test",
             Page::Controller => "Controller",
             Page::Racing => "Racing",
             Page::Mapping => "Mapping",
@@ -51,13 +54,14 @@ impl Page {
     pub fn tag(self) -> &'static str {
         match self {
             Page::Dashboard => "01",
-            Page::Controller => "02",
-            Page::Racing => "03",
-            Page::Mapping => "04",
-            Page::Gyro => "05",
-            Page::Profiles => "06",
-            Page::Output => "07",
-            Page::Settings => "08",
+            Page::Test => "02",
+            Page::Controller => "03",
+            Page::Racing => "04",
+            Page::Mapping => "05",
+            Page::Gyro => "06",
+            Page::Profiles => "07",
+            Page::Output => "08",
+            Page::Settings => "09",
         }
     }
 
@@ -65,6 +69,7 @@ impl Page {
     pub fn blurb(self) -> &'static str {
         match self {
             Page::Dashboard => "Health, live pad, quick controls",
+            Page::Test => "Check every part of the pad works",
             Page::Controller => "Sticks, deadzones, curves",
             Page::Racing => "Steering feel and pedals",
             Page::Mapping => "Buttons, axes, formulas",
@@ -119,6 +124,13 @@ pub struct AppState {
 
     /// Recent frame intervals, for the latency sparkline.
     pub frame_history: Vec<f32>,
+
+    /// Parts of the pad the Test page has seen working, as a bit per part.
+    ///
+    /// Bits rather than a set because the list of parts is fixed at compile
+    /// time and the update runs once per frame — a bit test is as cheap as
+    /// reading a bool, and there is nothing to allocate.
+    pub tested: u32,
 
     pub toasts: Vec<Toast>,
 
@@ -189,6 +201,7 @@ impl AppState {
             gyro,
             gyro_history: Vec::with_capacity(120),
             frame_history: Vec::with_capacity(120),
+            tested: 0,
             toasts: Vec::new(),
             quit: false,
             minimise_requested: false,

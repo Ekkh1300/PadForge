@@ -86,6 +86,11 @@ impl App {
             t.frame_ms,
             padcore::engine::HISTORY_LEN,
         );
+        // The Test page keeps score whether or not it is on screen. A control
+        // bumped while another page was showing still proved it works, and
+        // making the check depend on which page is open would quietly drop
+        // that evidence the moment someone navigated away mid-check.
+        pages::test::observe(&t.report, &mut self.state.tested);
     }
 
     /// Persist anything marked dirty.
@@ -274,6 +279,7 @@ impl App {
                         ui.set_max_width(content_w);
                         match page {
                             Page::Dashboard => pages::dashboard::draw(ui, &mut page_ctx),
+                            Page::Test => pages::test::draw(ui, &mut page_ctx),
                             Page::Controller => pages::controller::draw(ui, &mut page_ctx),
                             Page::Racing => pages::racing::draw(ui, &mut page_ctx),
                             Page::Mapping => pages::mapping::draw(ui, &mut page_ctx),
