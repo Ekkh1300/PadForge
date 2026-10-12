@@ -111,6 +111,114 @@ impl GamepadState {
     }
 }
 
+/// The d-pad, as a DualShock 4 reports it.
+///
+/// A DualShock 4 reports its d-pad as a *hat*: one value for the eight compass
+/// directions plus one for "nothing held", never as four independent bits.
+/// XInput is the opposite, so up-and-left is two bits here and one value there.
+///
+/// A contradictory pair — up **and** down — is reported as nothing rather than
+/// resolved in favour of one. A d-pad physically cannot do it, and picking a
+/// winner would invent a press that nobody made.
+pub const DS4_DPAD_NONE: u16 = 0x8;
+
+/// Four XInput d-pad bits to a DualShock 4 hat value.
+pub fn ds4_hat(buttons: u16) -> u16 {
+    let up = buttons & XButtons::DPAD_UP != 0;
+    let down = buttons & XButtons::DPAD_DOWN != 0;
+    let left = buttons & XButtons::DPAD_LEFT != 0;
+    let right = buttons & XButtons::DPAD_RIGHT != 0;
+    match (up, down, left, right) {
+        (true, false, true, false) => 0x7,  // north-west
+        (true, false, false, true) => 0x1,  // north-east
+        (false, true, true, false) => 0x5,  // south-west
+        (false, true, false, true) => 0x3,  // south-east
+        (true, false, false, false) => 0x0, // north
+        (false, true, false, false) => 0x4, // south
+        (false, false, true, false) => 0x6, // west
+        (false, false, false, true) => 0x2, // east
+        _ => DS4_DPAD_NONE,
+    }
+}
+
+/// The digital button word of a DualShock 4 report.
+///
+/// The bits are ViGEmBus's own `DS4_BUTTONS`, which is what the driver reads
+/// when this pad is published. The low nibble is the hat and the rest are the
+/// face, shoulder, share/options and stick-click buttons.
+pub fn ds4_buttons(state: GamepadState) -> u16 {
+    let b = state.buttons;
+    let mut out = ds4_hat(b);
+    if b & XButtons::X != 0 {
+        out |= 1 << 4; // square
+    }
+    if b & XButtons::A != 0 {
+        out |= 1 << 5; // cross
+    }
+    if b & XButtons::B != 0 {
+        out |= 1 << 6; // circle
+    }
+    if b & XButtons::Y != 0 {
+        out |= 1 << 7; // triangle
+    }
+    if b & XButtons::LEFT_SHOULDER != 0 {
+        out |= 1 << 8; // L1
+    }
+    if b & XButtons::RIGHT_SHOULDER != 0 {
+        out |= 1 << 9; // R1
+    }
+    // A DualShock 4 reports each trigger twice: as travel and as a pressed
+    // button. Halfway is where "pressed" starts, which is also roughly where
+    // the real switch closes — the click is at the end of the travel, not at
+    // the start of it.
+    if state.left_trigger >= 128 {
+        out |= 1 << 10;
+    }
+    if state.right_trigger >= 128 {
+        out |= 1 << 11;
+    }
+    if b & XButtons::BACK != 0 {
+        out |= 1 << 12; // share
+    }
+    if b & XButtons::START != 0 {
+        out |= 1 << 13; // options
+    }
+    if b & XButtons::LEFT_THUMB != 0 {
+        out |= 1 << 14;
+    }
+    if b & XButtons::RIGHT_THUMB != 0 {
+        out |= 1 << 15;
+    }
+    out
+}
+
+/// The "special" byte: the PS button and the touchpad click, which a DualShock
+/// 4 keeps outside its button word.
+///
+/// Only the PS button can be filled. A touchpad click arrives in the pad's own
+/// HID report and XInput has nowhere to carry it, so it is gone by the time a
+/// state reaches here — and inventing a press for it would be worse than
+/// leaving it out.
+pub fn ds4_special(state: GamepadState) -> u8 {
+    let mut out = 0;
+    if state.buttons & XButtons::GUIDE != 0 {
+        out |= 1 << 0; // PS
+    }
+    out
+}
+
+/// One stick axis into a DualShock 4's byte, where `0x80` is centre.
+///
+/// XInput's Y grows upward and the DualShock 4's shrinks, so the two axes are
+/// not written the same way; `invert` says which is being written. The result
+/// lands on `0`, `0x80` and `0xFF` for full-left, centre and full-right, which
+/// is where a real pad reports them.
+pub fn ds4_axis(v: i16, invert: bool) -> u8 {
+    let t = (v as f32 + 32767.0) / 65534.0 * 255.0;
+    let t = if invert { 255.0 - t } else { t };
+    t.round().clamp(0.0, 255.0) as u8
+}
+
 /// What the engine talks to, so the rest of the codebase does not care whether a
 /// real virtual driver is present.
 pub trait OutputBackend: Send {
@@ -180,13 +288,26 @@ impl OutputBackend for NullBackend {
 #[cfg(target_os = "windows")]
 mod vigem {
     use super::*;
+    use crate::settings::OutputKind;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-    use vigem_client::{Client, TargetId, Xbox360Wired};
+    use vigem_client::{Client, DS4Report, DualShock4Wired, TargetId, Xbox360Wired};
 
     /// The virtual pad is exposed as a wired Xbox 360 controller, which is what
     /// every Windows game already knows how to talk to.
-    type Pad = Xbox360Wired<Arc<Client>>;
+    type X360Pad = Xbox360Wired<Arc<Client>>;
+    /// The other shape: a wired DualShock 4, for programs that speak HID.
+    type Ds4Pad = DualShock4Wired<Arc<Client>>;
+
+    /// Which device the bus was asked for.
+    ///
+    /// Two shapes over one backend rather than two backends: the connection,
+    /// the reporting of why it is not there, and the teardown are all the same,
+    /// and duplicating them would let the two drift apart.
+    enum Target {
+        X360(X360Pad),
+        Ds4(Ds4Pad),
+    }
 
     /// Real output through the ViGEmBus virtual driver.
     ///
@@ -196,7 +317,7 @@ mod vigem {
     pub struct VigemBackend {
         // Held so the target cannot outlive the bus connection.
         _client: Option<Arc<Client>>,
-        target: Option<Pad>,
+        target: Option<Target>,
         connected: bool,
         last_error: Option<String>,
         last: GamepadState,
@@ -209,28 +330,22 @@ mod vigem {
         /// XInput slot the driver published this pad into.
         ///
         /// Read back from the driver rather than remembered from the request,
-        /// because a preferred slot is only honoured when it is free.
+        /// because a preferred slot is only honoured when it is free. Always
+        /// `None` for a DualShock 4, which is a HID device and never appears on
+        /// the XInput bus at all.
         slot: Option<u32>,
+        /// Which shape this backend is.
+        kind: OutputKind,
     }
 
     impl VigemBackend {
         /// Try to bring up a virtual pad, taking whichever slot is free.
         pub fn connect() -> Self {
-            Self::connect_with_slot(None)
+            Self::connect_with_slot(None, OutputKind::Xbox360)
         }
 
-        /// Try to bring up a virtual pad in `wanted`, an XInput index in `0..4`.
-        ///
-        /// ViGEmBus decides the slot and offers no way to name one, so a
-        /// preference is met by plugging in, reading back where it landed, and
-        /// unplugging to try again if it is wrong. That costs one extra
-        /// enumeration and is the only route to a chosen player.
-        ///
-        /// The retry stops after the first pass. Carrying on until the request
-        /// was met would mean repeatedly unplugging whichever controller holds
-        /// the slot, and a pad that vanishes mid-game is a worse outcome than a
-        /// preference the player can see was not applied.
-        /// Try to bring up a virtual pad, asking for `wanted`, an XInput slot.
+        /// Bring up a virtual pad of the chosen shape, asking for `wanted`, an
+        /// XInput slot.
         ///
         /// ViGEmBus has no way to name a slot: `plugin` takes no index and the
         /// bus always hands out the lowest free one. So a request is honoured
@@ -242,12 +357,24 @@ mod vigem {
         /// reporting a removed controller as present long after it is gone, so
         /// the bus hands the pad the same slot back every time and the second
         /// attempt lands exactly where the first did.
-        pub fn connect_with_slot(wanted: Option<usize>) -> Self {
+        ///
+        /// `wanted` means nothing to a DualShock 4. That shape is a HID device
+        /// and never reaches XInput, so there is no slot for it to be given.
+        pub fn connect_with_slot(wanted: Option<usize>, kind: OutputKind) -> Self {
+            match kind {
+                OutputKind::Xbox360 => Self::x360(wanted),
+                OutputKind::DualShock4 => Self::ds4(),
+            }
+        }
+
+        /// The Xbox 360 shape: an XInput pad, the one every game knows, and the
+        /// only one whose driver tells us when a game wants the motors running.
+        fn x360(wanted: Option<usize>) -> Self {
             let client = match Client::connect() {
                 Ok(c) => Arc::new(c),
                 Err(e) => {
                     tracing::warn!("vigembus unavailable: {e:?}");
-                    return Self::failed(format!("{e:?}"));
+                    return Self::failed(format!("{e:?}"), OutputKind::Xbox360);
                 }
             };
 
@@ -315,13 +442,59 @@ mod vigem {
 
             Self {
                 _client: Some(client),
-                target: Some(target),
+                target: Some(Target::X360(target)),
                 connected: true,
                 last_error: note,
                 last: GamepadState::neutral(),
                 feedback,
                 notify,
                 slot,
+                kind: OutputKind::Xbox360,
+            }
+        }
+
+        /// The DualShock 4 shape: a HID device on the bus, with no XInput slot.
+        ///
+        /// Chosen by programs that speak to a pad directly rather than through
+        /// XInput — emulators, Steam's own stack, anything that wants the share
+        /// and options buttons by name.
+        fn ds4() -> Self {
+            let kind = OutputKind::DualShock4;
+            let client = match Client::connect() {
+                Ok(c) => Arc::new(c),
+                Err(e) => {
+                    tracing::warn!("vigembus unavailable: {e:?}");
+                    return Self::failed(format!("{e:?}"), kind);
+                }
+            };
+
+            let mut target = DualShock4Wired::new(Arc::clone(&client), TargetId::DUALSHOCK4_WIRED);
+            if let Err(e) = target.plugin() {
+                tracing::warn!("could not plug the virtual DualShock 4: {e:?}");
+                return Self::failed(format!("{e:?}"), kind);
+            }
+            let _ = target.wait_ready();
+
+            // Said once, here, and deliberately not once per report. A player
+            // who picked this shape needs to know what it costs, and a warning
+            // buried in a log file is not somewhere anybody looks while
+            // wondering why the pad has stopped buzzing.
+            tracing::info!(
+                "virtual DualShock 4 published. Force feedback does not travel back \
+                 through this shape: the driver's DualShock 4 target has no \
+                 notification channel, so a game's rumble stops at the bus."
+            );
+
+            Self {
+                _client: Some(client),
+                target: Some(Target::Ds4(target)),
+                connected: true,
+                last_error: None,
+                last: GamepadState::neutral(),
+                feedback: Arc::new(parking_lot::Mutex::new(None)),
+                notify: None,
+                slot: None,
+                kind,
             }
         }
 
@@ -346,7 +519,7 @@ mod vigem {
         /// The driver's own message is what decides whether to ask again.
         /// "Not ready yet" is an answer that will change; anything else is an
         /// answer that will not, and retrying it would only delay finding out.
-        fn plug_and_read(target: &mut Pad) -> Option<u32> {
+        fn plug_and_read(target: &mut X360Pad) -> Option<u32> {
             if let Err(e) = target.plugin() {
                 tracing::warn!("could not plug virtual pad: {e:?}");
                 return None;
@@ -386,7 +559,7 @@ mod vigem {
         }
 
         /// Build a disconnected backend, remembering why.
-        fn failed(reason: String) -> Self {
+        fn failed(reason: String, kind: OutputKind) -> Self {
             Self {
                 _client: None,
                 target: None,
@@ -396,6 +569,28 @@ mod vigem {
                 feedback: Arc::new(parking_lot::Mutex::new(None)),
                 notify: None,
                 slot: None,
+                kind,
+            }
+        }
+
+        /// The report a DualShock 4 would have sent, from the state the engine
+        /// keeps.
+        ///
+        /// Assembled here rather than in the caller so the two axes and the
+        /// button word are built the same way every time, and so a test can
+        /// hold the result and look at it.
+        fn ds4_report(state: GamepadState) -> DS4Report {
+            DS4Report {
+                thumb_lx: ds4_axis(state.thumb_lx, false),
+                // XInput's Y grows upward and a DualShock 4's shrinks, so the
+                // two are written opposite ways round.
+                thumb_ly: ds4_axis(state.thumb_ly, true),
+                thumb_rx: ds4_axis(state.thumb_rx, false),
+                thumb_ry: ds4_axis(state.thumb_ry, true),
+                buttons: ds4_buttons(state),
+                special: ds4_special(state),
+                trigger_l: state.left_trigger,
+                trigger_r: state.right_trigger,
             }
         }
 
@@ -408,7 +603,7 @@ mod vigem {
     impl OutputBackend for VigemBackend {
         fn name(&self) -> String {
             if self.connected {
-                "ViGEmBus · virtual Xbox 360 pad".into()
+                format!("ViGEmBus · virtual {} pad", self.kind.label())
             } else {
                 format!(
                     "ViGEmBus unavailable · {}",
@@ -426,19 +621,29 @@ mod vigem {
             let Some(target) = self.target.as_mut() else {
                 return;
             };
-            let pad = vigem_client::XGamepad {
-                buttons: vigem_client::XButtons(state.buttons),
-                left_trigger: state.left_trigger,
-                right_trigger: state.right_trigger,
-                thumb_lx: state.thumb_lx,
-                thumb_ly: state.thumb_ly,
-                thumb_rx: state.thumb_rx,
-                thumb_ry: state.thumb_ry,
-            };
-            // `TargetNotReady` for the first few milliseconds after plugging in is
-            // expected, so nothing here is worth warning about.
-            if let Err(e) = target.update(&pad) {
-                tracing::trace!("report dropped: {e:?}");
+            match target {
+                Target::X360(target) => {
+                    let pad = vigem_client::XGamepad {
+                        buttons: vigem_client::XButtons(state.buttons),
+                        left_trigger: state.left_trigger,
+                        right_trigger: state.right_trigger,
+                        thumb_lx: state.thumb_lx,
+                        thumb_ly: state.thumb_ly,
+                        thumb_rx: state.thumb_rx,
+                        thumb_ry: state.thumb_ry,
+                    };
+                    // `TargetNotReady` for the first few milliseconds after plugging in is
+                    // expected, so nothing here is worth warning about.
+                    if let Err(e) = target.update(&pad) {
+                        tracing::trace!("report dropped: {e:?}");
+                    }
+                }
+                Target::Ds4(target) => {
+                    let report = Self::ds4_report(state);
+                    if let Err(e) = target.update(&report) {
+                        tracing::trace!("report dropped: {e:?}");
+                    }
+                }
             }
         }
 
@@ -455,8 +660,16 @@ mod vigem {
         }
 
         fn shutdown(&mut self) {
-            if let Some(mut t) = self.target.take() {
-                let _ = t.unplug();
+            // Both shapes unplug the same way; the match exists only because
+            // they are different types, and `unplug` is what tells the bus the
+            // pad has gone rather than leaving it to time out.
+            let unplugged = match self.target.take() {
+                Some(Target::X360(mut t)) => t.unplug(),
+                Some(Target::Ds4(mut t)) => t.unplug(),
+                None => Ok(()),
+            };
+            if let Err(e) = unplugged {
+                tracing::debug!("unplug reported: {e:?}");
             }
             self.connected = false;
         }
@@ -512,6 +725,170 @@ mod tests {
         assert!(names.contains(&"A"));
         assert!(names.contains(&"DPadUp"));
         assert_eq!(names.len(), 2);
+    }
+
+    // --- DualShock 4 output -------------------------------------------------
+
+    /// A state holding nothing, so a test can press one thing and count bits.
+    fn held(buttons: u16) -> GamepadState {
+        GamepadState {
+            buttons,
+            ..GamepadState::neutral()
+        }
+    }
+
+    #[test]
+    fn ds4_hat_walks_the_compass_in_the_driver_s_order() {
+        // ViGEmBus's DS4_DPAD_DIRECTIONS runs north, north-east, east and so on
+        // clockwise, with 8 meaning nothing held. It is the order the driver
+        // reads, so it is the one that has to be right.
+        assert_eq!(ds4_hat(XButtons::DPAD_UP), 0x0);
+        assert_eq!(ds4_hat(XButtons::DPAD_UP | XButtons::DPAD_RIGHT), 0x1);
+        assert_eq!(ds4_hat(XButtons::DPAD_RIGHT), 0x2);
+        assert_eq!(ds4_hat(XButtons::DPAD_DOWN | XButtons::DPAD_RIGHT), 0x3);
+        assert_eq!(ds4_hat(XButtons::DPAD_DOWN), 0x4);
+        assert_eq!(ds4_hat(XButtons::DPAD_DOWN | XButtons::DPAD_LEFT), 0x5);
+        assert_eq!(ds4_hat(XButtons::DPAD_LEFT), 0x6);
+        assert_eq!(ds4_hat(XButtons::DPAD_UP | XButtons::DPAD_LEFT), 0x7);
+        assert_eq!(ds4_hat(0), DS4_DPAD_NONE);
+    }
+
+    #[test]
+    fn ds4_hat_refuses_a_direction_a_d_pad_cannot_make() {
+        // Up and down at once is two XInput bits, which a d-pad physically
+        // cannot produce. Reporting either way round would invent a press that
+        // nobody made, so the answer is nothing held.
+        assert_eq!(
+            ds4_hat(XButtons::DPAD_UP | XButtons::DPAD_DOWN),
+            DS4_DPAD_NONE
+        );
+        assert_eq!(
+            ds4_hat(XButtons::DPAD_LEFT | XButtons::DPAD_RIGHT),
+            DS4_DPAD_NONE
+        );
+        assert_eq!(
+            ds4_hat(XButtons::DPAD_UP | XButtons::DPAD_DOWN | XButtons::DPAD_LEFT),
+            DS4_DPAD_NONE
+        );
+    }
+
+    #[test]
+    fn ds4_face_buttons_land_on_their_own_bits() {
+        // The bits are ViGEmBus's DS4_BUTTONS: square, cross, circle, triangle
+        // in that order above the hat nibble. Each face button is checked
+        // against every other, because a shifted mapping would still pass a
+        // test that only looked at one of them.
+        //
+        // Every expectation carries the hat's idle value as well: the d-pad
+        // always occupies the low nibble, and "no d-pad pressed" is 8 rather
+        // than 0. Reading these as bare bit numbers is how the mapping would
+        // pass by accident.
+        assert_eq!(ds4_buttons(held(XButtons::X)), DS4_DPAD_NONE | (1 << 4));
+        assert_eq!(ds4_buttons(held(XButtons::A)), DS4_DPAD_NONE | (1 << 5));
+        assert_eq!(ds4_buttons(held(XButtons::B)), DS4_DPAD_NONE | (1 << 6));
+        assert_eq!(ds4_buttons(held(XButtons::Y)), DS4_DPAD_NONE | (1 << 7));
+    }
+
+    #[test]
+    fn ds4_shoulders_share_and_stick_clicks_keep_their_order() {
+        assert_eq!(
+            ds4_buttons(held(XButtons::LEFT_SHOULDER)),
+            DS4_DPAD_NONE | (1 << 8)
+        );
+        assert_eq!(
+            ds4_buttons(held(XButtons::RIGHT_SHOULDER)),
+            DS4_DPAD_NONE | (1 << 9)
+        );
+        assert_eq!(ds4_buttons(held(XButtons::BACK)), DS4_DPAD_NONE | (1 << 12));
+        assert_eq!(
+            ds4_buttons(held(XButtons::START)),
+            DS4_DPAD_NONE | (1 << 13)
+        );
+        assert_eq!(
+            ds4_buttons(held(XButtons::LEFT_THUMB)),
+            DS4_DPAD_NONE | (1 << 14)
+        );
+        assert_eq!(
+            ds4_buttons(held(XButtons::RIGHT_THUMB)),
+            DS4_DPAD_NONE | (1 << 15)
+        );
+    }
+
+    #[test]
+    fn ds4_triggers_report_travel_and_a_press() {
+        // A DualShock 4 sends each trigger twice: as how far it is pulled and
+        // as whether it counts as pressed. Halfway is where that starts, so a
+        // feather touch is only travel and a pull past the middle is both.
+        let light = GamepadState {
+            left_trigger: 40,
+            ..GamepadState::neutral()
+        };
+        assert_eq!(ds4_buttons(light), DS4_DPAD_NONE);
+
+        let pulled = GamepadState {
+            left_trigger: 40,
+            right_trigger: 200,
+            ..GamepadState::neutral()
+        };
+        assert_eq!(ds4_buttons(pulled), DS4_DPAD_NONE | (1 << 11));
+
+        // Exactly on the line counts as pressed, so the boundary is not a
+        // place where the button can vanish.
+        let edge = GamepadState {
+            right_trigger: 128,
+            ..GamepadState::neutral()
+        };
+        assert_eq!(ds4_buttons(edge), DS4_DPAD_NONE | (1 << 11));
+        let below = GamepadState {
+            right_trigger: 127,
+            ..GamepadState::neutral()
+        };
+        assert_eq!(ds4_buttons(below), DS4_DPAD_NONE);
+    }
+
+    #[test]
+    fn ds4_hat_and_buttons_coexist_in_one_word() {
+        // The hat occupies the low nibble, so pressing up *and* a face button
+        // has to keep both. This is the case a test of either half alone would
+        // miss.
+        let both = GamepadState {
+            buttons: XButtons::DPAD_UP | XButtons::Y | XButtons::BACK,
+            ..GamepadState::neutral()
+        };
+        assert_eq!(ds4_buttons(both), (1 << 7) | (1 << 12));
+    }
+
+    #[test]
+    fn ds4_ps_button_lives_in_the_special_byte() {
+        assert_eq!(ds4_special(held(XButtons::GUIDE)), 1 << 0);
+        assert_eq!(ds4_special(held(XButtons::A)), 0);
+    }
+
+    #[test]
+    fn ds4_axis_anchors_left_centre_and_right() {
+        // A DualShock 4's own encoding: 0x80 at rest, 0 at full travel one way
+        // and 0xFF at the other. Landing exactly on those three is what stops
+        // a virtual pad from sitting a hair off-centre forever.
+        assert_eq!(ds4_axis(-i16::MAX, false), 0x00);
+        assert_eq!(ds4_axis(0, false), 0x80);
+        assert_eq!(ds4_axis(i16::MAX, false), 0xFF);
+        // The trigger byte is deliberately past centre: 0x80 *is* the middle,
+        // and rounding to the nearest count cannot put it anywhere else.
+        assert_eq!(ds4_axis(0, true), 0x80);
+    }
+
+    #[test]
+    fn ds4_y_axis_runs_the_opposite_way_to_xinput() {
+        // XInput's Y grows upward. A DualShock 4's shrinks. Getting this wrong
+        // inverts the stick in every game and no other test would notice,
+        // because both halves of the pair are self-consistent.
+        assert_eq!(ds4_axis(i16::MAX, true), 0x00); // up
+        assert_eq!(ds4_axis(-i16::MAX, true), 0xFF); // down
+                                                     // The reading a real DualShock 4 sends for "pushed straight up" is 0,
+                                                     // which is what an inverted full-up becomes — and full-down is its
+                                                     // mirror, so the pair is not the same value twice.
+        assert_eq!(ds4_axis(i16::MAX, true), 0x00);
+        assert_ne!(ds4_axis(i16::MAX, true), ds4_axis(-i16::MAX, true));
     }
 
     #[test]

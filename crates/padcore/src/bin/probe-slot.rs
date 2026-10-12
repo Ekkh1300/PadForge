@@ -17,6 +17,7 @@
 use std::time::{Duration, Instant};
 
 use padcore::output::{OutputBackend, VigemBackend};
+use padcore::settings::OutputKind;
 
 /// How long to wait for the driver to name the slot.
 const SLOT_WAIT: Duration = Duration::from_millis(1500);
@@ -37,8 +38,10 @@ fn main() {
     }
 
     // Same call the engine makes, so a difference here is a difference in the
-    // app rather than in something this probe invented.
-    let backend = VigemBackend::connect_with_slot(wanted);
+    // app rather than in something this probe invented. Xbox 360 because the
+    // question this probe asks is which *XInput slot* the pad landed in, and a
+    // DualShock 4 never lands in one.
+    let backend = VigemBackend::connect_with_slot(wanted, OutputKind::Xbox360);
 
     if !backend.is_connected() {
         eprintln!(

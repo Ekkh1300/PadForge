@@ -25,7 +25,13 @@ hidapi = { version = "2.6", default-features = false, features = ["windows-nativ
 # The notification feature is what carries force feedback: without it ViGEmBus
 # accepts the virtual pad and never says what the game asked it to vibrate, so
 # there is nothing to forward to the DualShock.
-vigem-client = { version = "0.1", features = ["unstable_xtarget_notification"] }
+#
+# `unstable_ds4` is what lets the virtual pad be a DualShock 4 rather than an
+# Xbox 360. It exposes `DS4Report` and the plug/update calls for that target.
+vigem-client = { version = "0.1", features = [
+    "unstable_xtarget_notification",
+    "unstable_ds4",
+] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

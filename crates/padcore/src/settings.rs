@@ -18,6 +18,33 @@ pub enum OutputMode {
     MonitorOnly,
 }
 
+/// What the virtual pad should look like to Windows.
+///
+/// The choice is not cosmetic. A DualShock 4 is a HID device, so programs that
+/// talk to a pad directly — emulators, Steam's own stack, anything that wants
+/// the share and options buttons by name — see the shape they expect. An Xbox
+/// 360 pad is what almost every game already knows how to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputKind {
+    /// An Xbox 360 controller, on the XInput bus.
+    #[default]
+    Xbox360,
+    /// A Sony DualShock 4, on the HID bus.
+    DualShock4,
+}
+
+impl OutputKind {
+    pub const ALL: &'static [OutputKind] = &[OutputKind::Xbox360, OutputKind::DualShock4];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OutputKind::Xbox360 => "Xbox 360",
+            OutputKind::DualShock4 => "DualShock 4",
+        }
+    }
+}
+
 /// Which pad to bind to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -171,6 +198,12 @@ pub struct Settings {
     pub device: DeviceSelection,
     pub poll_rate_hz: u32,
     pub output_mode: OutputMode,
+    /// What the published pad looks like to Windows.
+    ///
+    /// Defaulted for settings written before the choice existed, which are the
+    /// only settings that can lack it.
+    #[serde(default)]
+    pub output_kind: OutputKind,
     /// Which XInput controller the virtual pad is published as.
     pub virtual_slot: SlotChoice,
 
@@ -216,6 +249,7 @@ impl Default for Settings {
             device: DeviceSelection::Auto,
             poll_rate_hz: 250,
             output_mode: OutputMode::Xbox360,
+            output_kind: OutputKind::Xbox360,
             virtual_slot: SlotChoice::Auto,
             wheel: WheelSettings::default(),
             paused: false,
@@ -444,6 +478,43 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn a_settings_file_written_before_the_choice_existed_still_loads() {
+        // The output kind was added after settings files were already being
+        // written, so one of those files has no such key. A missing key is not
+        // a corrupt file, and refusing to open it would lock a player out of
+        // their own profiles over a preference they never had the chance to
+        // set.
+        let mut json: serde_json::Value = serde_json::to_value(Settings::default()).unwrap();
+        json.as_object_mut().unwrap().remove("output_kind");
+        assert!(json.get("output_kind").is_none());
+
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(back.output_kind, OutputKind::Xbox360);
+    }
+
+    #[test]
+    fn the_chosen_output_kind_survives_a_round_trip() {
+        let s = Settings {
+            output_kind: OutputKind::DualShock4,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        // Sniffed rather than just re-read: a round trip that passes while the
+        // file still says "xbox360" would mean the choice never leaves memory.
+        assert!(json.contains("dual_shock4"), "got {json}");
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.output_kind, OutputKind::DualShock4);
+    }
+
+    #[test]
+    fn every_output_kind_has_a_label() {
+        for kind in OutputKind::ALL {
+            assert!(!kind.label().is_empty());
+        }
+        assert_ne!(OutputKind::Xbox360.label(), OutputKind::DualShock4.label());
     }
 
     #[test]

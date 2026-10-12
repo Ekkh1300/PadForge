@@ -4,7 +4,7 @@ use crate::theme::*;
 use crate::widgets;
 use egui::{RichText, Stroke};
 use padcore::engine::EngineCommand;
-use padcore::settings::{OutputMode, SlotChoice};
+use padcore::settings::{OutputKind, OutputMode, SlotChoice};
 
 #[allow(clippy::too_many_lines)]
 pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
@@ -71,10 +71,11 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
                     .size(12.5),
             );
             ui.label(
-                RichText::new(
-                    "PadForge publishes a virtual Xbox 360 pad through the ViGEmBus driver. \
+                RichText::new(format!(
+                    "PadForge publishes a virtual {} pad through the ViGEmBus driver. \
                      Install that driver, then restart PadForge.",
-                )
+                    ctx.state.settings.output_kind.label()
+                ))
                 .color(TEXT_MUTED)
                 .size(12.0),
             );
@@ -110,6 +111,18 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
             .color(TEXT_FAINT)
             .size(11.5),
         );
+        if ctx.state.settings.output_kind == OutputKind::DualShock4 {
+            ui.add_space(SPACE_XS);
+            ui.label(
+                RichText::new(
+                    "That button still works — it drives the pad you are holding. \
+                     What does not arrive in this shape is a game's own rumble: the \
+                     driver's DualShock 4 target has no channel for it.",
+                )
+                .color(TEXT_MUTED)
+                .size(11.5),
+            );
+        }
 
         ui.add_space(SPACE_MD);
         divider(ui);
@@ -133,6 +146,11 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
         let asked = ctx.state.settings.virtual_slot.player_no();
         let landed = t.output_slot.map(|s| s as usize + 1);
         let refused = matches!((asked, landed), (Some(a), Some(l)) if a != l);
+        // A DualShock 4 never reaches XInput, so there is no player number for
+        // it to be given. Saying the driver "has not reported" one would
+        // describe a question nobody asked, and offering the picker below
+        // would offer a setting that does nothing.
+        let is_ds4 = ctx.state.settings.output_kind == OutputKind::DualShock4;
         let (line, colour) = match (landed, refused) {
             (Some(l), false) => (format!("This pad is Player {l} right now."), TEXT),
             (Some(l), true) => (
@@ -142,6 +160,12 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
                 },
                 DANGER,
             ),
+            (None, _) if is_ds4 => (
+                "A DualShock 4 is a HID device, not an Xbox pad, so Windows never \
+                 gives it a player number."
+                    .to_string(),
+                TEXT_FAINT,
+            ),
             (None, _) => (
                 "The driver has not reported which player this pad is.".to_string(),
                 TEXT_FAINT,
@@ -149,48 +173,62 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
         };
         ui.label(RichText::new(line).color(colour).size(12.0));
         ui.add_space(SPACE_XS);
-        let mut slot = ctx.state.settings.virtual_slot;
-        ui.horizontal(|ui| {
-            for choice in SlotChoice::ALL {
-                let selected = slot == choice;
-                let btn = egui::Button::new(
-                    RichText::new(choice.label())
-                        .color(if selected { BACKDROP } else { TEXT })
-                        .size(12.5),
+        if is_ds4 {
+            // Not hidden. Hiding a control without saying why reads as though
+            // the page forgot it; saying plainly that it does nothing here is
+            // what stops it being set, switched away from, and blamed later.
+            ui.label(
+                RichText::new(
+                    "Player numbers belong to Xbox pads, so the setting below does \
+                     nothing while the output is a DualShock 4.",
                 )
-                .fill(if selected { ACCENT } else { SURFACE_RAISED })
-                .stroke(Stroke::new(1.0, if selected { ACCENT } else { BORDER }))
-                .corner_radius(RADIUS_SM);
-                if ui.add(btn).clicked() {
-                    slot = choice;
-                }
-            }
-        });
-        if slot != ctx.state.settings.virtual_slot {
-            ctx.state.settings.virtual_slot = slot;
-            let settings = ctx.state.settings.clone();
-            ctx.state.settings_dirty = true;
-            ctx.engine
-                .send(EngineCommand::ApplySettings(Box::new(settings)));
-            ctx.state.toast(
-                match slot {
-                    // Not the slot, which may well be refused; the request is
-                    // what is being confirmed here.
-                    SlotChoice::Auto => "Slot: automatic".into(),
-                    SlotChoice::Player(i) => format!("Asking for Player {}", i + 1),
-                },
-                ToastLevel::Info,
+                .color(TEXT_FAINT)
+                .size(11.5),
             );
-        }
-        ui.label(
-            RichText::new(
-                "Games see the pad as this player. If the slot is already taken the \
+        } else {
+            let mut slot = ctx.state.settings.virtual_slot;
+            ui.horizontal(|ui| {
+                for choice in SlotChoice::ALL {
+                    let selected = slot == choice;
+                    let btn = egui::Button::new(
+                        RichText::new(choice.label())
+                            .color(if selected { BACKDROP } else { TEXT })
+                            .size(12.5),
+                    )
+                    .fill(if selected { ACCENT } else { SURFACE_RAISED })
+                    .stroke(Stroke::new(1.0, if selected { ACCENT } else { BORDER }))
+                    .corner_radius(RADIUS_SM);
+                    if ui.add(btn).clicked() {
+                        slot = choice;
+                    }
+                }
+            });
+            if slot != ctx.state.settings.virtual_slot {
+                ctx.state.settings.virtual_slot = slot;
+                let settings = ctx.state.settings.clone();
+                ctx.state.settings_dirty = true;
+                ctx.engine
+                    .send(EngineCommand::ApplySettings(Box::new(settings)));
+                ctx.state.toast(
+                    match slot {
+                        // Not the slot, which may well be refused; the request is
+                        // what is being confirmed here.
+                        SlotChoice::Auto => "Slot: automatic".into(),
+                        SlotChoice::Player(i) => format!("Asking for Player {}", i + 1),
+                    },
+                    ToastLevel::Info,
+                );
+            }
+            ui.label(
+                RichText::new(
+                    "Games see the pad as this player. If the slot is already taken the \
                  pad appears as the next free one, and the line above says where it \
                  ended up.",
-            )
-            .color(TEXT_FAINT)
-            .size(11.5),
-        );
+                )
+                .color(TEXT_FAINT)
+                .size(11.5),
+            );
+        }
 
         ui.add_space(SPACE_MD);
         divider(ui);
@@ -204,7 +242,7 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
             (
                 OutputMode::Xbox360,
                 "Virtual pad",
-                "Appears as an Xbox 360 controller in every game.",
+                "Publishes a controller games can read. Pick its shape below.",
             ),
             (
                 OutputMode::MonitorOnly,
@@ -243,6 +281,76 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
             });
             ui.add_space(SPACE_XS);
         }
+
+        // Which device Windows is told it has. Only offered when something is
+        // being published: a monitor-only pad has no shape to be given, and a
+        // choice that does nothing is worse than no choice at all.
+        if ctx.state.settings.output_mode == OutputMode::Xbox360 {
+            ui.add_space(SPACE_MD);
+            divider(ui);
+            ui.add_space(SPACE_MD);
+            ui.label(
+                RichText::new("SHOW AS")
+                    .color(TEXT_FAINT)
+                    .size(11.0)
+                    .strong(),
+            );
+            ui.add_space(SPACE_XS);
+            let kind_now = ctx.state.settings.output_kind;
+            ui.horizontal(|ui| {
+                for kind in OutputKind::ALL {
+                    let selected = kind_now == *kind;
+                    let btn = egui::Button::new(
+                        RichText::new(kind.label())
+                            .color(if selected { BACKDROP } else { TEXT })
+                            .size(13.0),
+                    )
+                    .fill(if selected { ACCENT } else { SURFACE_RAISED })
+                    .stroke(Stroke::new(1.0, if selected { ACCENT } else { BORDER }))
+                    .corner_radius(RADIUS_SM)
+                    .min_size(egui::vec2(120.0, 30.0));
+                    if ui.add(btn).clicked() && !selected {
+                        ctx.state.settings.output_kind = *kind;
+                        let settings = ctx.state.settings.clone();
+                        ctx.state.settings_dirty = true;
+                        ctx.engine
+                            .send(EngineCommand::ApplySettings(Box::new(settings)));
+                        ctx.state
+                            .toast(format!("Output: {}", kind.label()), ToastLevel::Info);
+                    }
+                }
+            });
+            ui.add_space(SPACE_XS);
+            let (hint, colour) = match kind_now {
+                OutputKind::Xbox360 => (
+                    "An Xbox 360 controller. What every game already knows how to read, \
+                     and the only shape that carries a game's rumble back to your pad."
+                        .to_string(),
+                    TEXT,
+                ),
+                OutputKind::DualShock4 => (
+                    "A DualShock 4. Programs that talk to a pad directly — emulators, \
+                     Steam, anything that wants Share and Options by name — see one. \
+                     Games that only understand Xbox pads will not list it."
+                        .to_string(),
+                    TEXT,
+                ),
+            };
+            ui.label(RichText::new(hint).color(colour).size(11.5));
+            if kind_now == OutputKind::DualShock4 {
+                ui.add_space(SPACE_XS);
+                ui.label(
+                    RichText::new(
+                        "Force feedback is off in this shape: the driver's DualShock 4 \
+                         target has no channel for telling this app that a game wants \
+                         the motors running. Switch to Xbox 360 for rumble.",
+                    )
+                    .color(DANGER)
+                    .size(11.5),
+                );
+            }
+        }
+
         ui.add_space(SPACE_MD);
         divider(ui);
         ui.add_space(SPACE_MD);

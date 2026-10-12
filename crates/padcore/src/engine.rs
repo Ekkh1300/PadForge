@@ -30,7 +30,7 @@ use crate::pointer::{self, GyroPointer, MouseButton, TouchpadPointer};
 use crate::process;
 use crate::profile::{LightbarConfig, LightbarMode, Profile, ProfileStore};
 use crate::report::{self, Ds4Report, Transport};
-use crate::settings::{DeviceSelection, OutputMode, Settings};
+use crate::settings::{DeviceSelection, OutputKind, OutputMode, Settings};
 use crate::touchpad::{TouchpadMode, TouchpadProcessor};
 
 /// Telemetry publish rate. Faster than this and the UI cannot keep up anyway.
@@ -487,16 +487,22 @@ impl Engine {
 
         #[cfg(target_os = "windows")]
         if self.settings.output_mode == OutputMode::Xbox360 {
-            let vigem =
-                crate::output::VigemBackend::connect_with_slot(self.settings.virtual_slot.index());
+            let kind = self.settings.output_kind;
+            let vigem = crate::output::VigemBackend::connect_with_slot(
+                self.settings.virtual_slot.index(),
+                kind,
+            );
             self.vigem_error = vigem.last_error().map(str::to_owned);
             if vigem.is_connected() {
-                match vigem.slot() {
-                    Some(s) => info!("virtual pad ready as XInput slot {s}"),
+                match (kind, vigem.slot()) {
+                    (OutputKind::Xbox360, Some(s)) => info!("virtual pad ready as XInput slot {s}"),
                     // The pad still works; the driver simply did not say which
                     // player it became, so this is a gap in what can be shown
                     // rather than in what reaches a game.
-                    None => warn!("virtual pad ready, slot unknown"),
+                    (OutputKind::Xbox360, None) => warn!("virtual pad ready, slot unknown"),
+                    // Expected, and not a gap: a DualShock 4 is a HID device,
+                    // so it has no XInput slot to be given and never will.
+                    (OutputKind::DualShock4, _) => info!("virtual DualShock 4 ready"),
                 }
                 self.backend = Box::new(vigem);
             } else {
@@ -752,7 +758,11 @@ impl Engine {
                 // move: moving means unplugging and plugging again, which is
                 // exactly what a fresh build does anyway.
                 let needs_backend = next.output_mode != self.settings.output_mode
-                    || next.virtual_slot != self.settings.virtual_slot;
+                    || next.virtual_slot != self.settings.virtual_slot
+                    // Changing the shape means unplugging one virtual device
+                    // and plugging in a different one; there is no way to
+                    // turn an Xbox 360 pad into a DualShock 4 in place.
+                    || next.output_kind != self.settings.output_kind;
                 self.settings = next;
                 if needs_backend {
                     self.build_backend();
