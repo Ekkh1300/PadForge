@@ -147,17 +147,22 @@ fn pedals(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Telemetr
             t.report.buttons.any(padcore::report::Buttons::L2),
         );
 
-        ui.add_space(SPACE_MD);
-        divider(ui);
         // Side by side, matching the two plots above them. Stacked, the two
         // sets of identical knobs ran to twice the height of everything else on
         // the page for the sake of repeating the same three controls.
         let mut changed = false;
-        ui.columns(2, |cols| {
-            caption(&mut cols[0], "THROTTLE");
-            changed |= pedal_knobs(&mut cols[0], "racing-throttle", &mut throttle);
-            caption(&mut cols[1], "BRAKE");
-            changed |= pedal_knobs(&mut cols[1], "racing-brake", &mut brake);
+        ui.add_space(SPACE_MD);
+        // Recessed rather than merely separated by a rule. The response curves
+        // above are what this card is for; these knobs are the fine adjustment
+        // underneath them, and at equal weight the eye starts at the knobs and
+        // never reaches the picture that explains them.
+        card_quiet().show(ui, |ui| {
+            ui.columns(2, |cols| {
+                caption(&mut cols[0], "THROTTLE");
+                changed |= pedal_knobs(&mut cols[0], "racing-throttle", &mut throttle);
+                caption(&mut cols[1], "BRAKE");
+                changed |= pedal_knobs(&mut cols[1], "racing-brake", &mut brake);
+            });
         });
 
         if changed {

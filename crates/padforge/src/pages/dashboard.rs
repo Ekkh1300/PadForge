@@ -51,10 +51,13 @@ fn live_input(ui: &mut egui::Ui, t: &padcore::engine::Telemetry) {
         };
         preview.show(ui);
         ui.add_space(SPACE_SM);
-        divider(ui);
-        caption(ui, "HOLDING");
-        ui.add_space(SPACE_XS);
-        active_controls(ui, &t.active_controls);
+        // Recessed, so "what is held right now" reads as an annotation on the
+        // pad drawing rather than as a second, competing panel.
+        card_quiet().show(ui, |ui| {
+            caption(ui, "HOLDING");
+            ui.add_space(SPACE_XS);
+            active_controls(ui, &t.active_controls);
+        });
     });
 }
 
@@ -102,26 +105,29 @@ fn controls(
         });
 
         ui.add_space(SPACE_MD);
-        divider(ui);
         caption(ui, "ACTIVE PROFILE");
         ui.add_space(SPACE_XS);
         profile_chips(ctx, ui);
 
         ui.add_space(SPACE_MD);
-        divider(ui);
-        caption(ui, "VIBRATION");
-        ui.add_space(SPACE_XS);
-        widgets::trigger_bar(ui, "Low motor", t.rumble.0 as f32 / 255.0, t.rumble.0 > 0);
-        widgets::trigger_bar(ui, "High motor", t.rumble.1 as f32 / 255.0, t.rumble.1 > 0);
-        ui.label(
-            RichText::new(if t.rumble_test {
-                "Testing: both motors, for a moment."
-            } else {
-                "Driven by the game, or by the test button."
-            })
-            .color(TEXT_FAINT)
-            .size(11.0),
-        );
+        // Recessed because it is a readout, not a control. The pause button and
+        // the profile picker above are what this card is for; the motor levels
+        // are the evidence that one of them worked.
+        card_quiet().show(ui, |ui| {
+            caption(ui, "VIBRATION");
+            ui.add_space(SPACE_XS);
+            widgets::trigger_bar(ui, "Low motor", t.rumble.0 as f32 / 255.0, t.rumble.0 > 0);
+            widgets::trigger_bar(ui, "High motor", t.rumble.1 as f32 / 255.0, t.rumble.1 > 0);
+            ui.label(
+                RichText::new(if t.rumble_test {
+                    "Testing: both motors, for a moment."
+                } else {
+                    "Driven by the game, or by the test button."
+                })
+                .color(TEXT_FAINT)
+                .size(11.0),
+            );
+        });
     });
 }
 

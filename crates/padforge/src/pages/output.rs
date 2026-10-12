@@ -36,11 +36,11 @@ pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
 /// Driver status, output mode, and pointer injection.
 fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Telemetry) {
     card().show(ui, |ui| {
+        heading(ui, "Virtual gamepad");
         ui.label(
-            RichText::new("Virtual gamepad")
-                .color(TEXT)
-                .size(15.0)
-                .strong(),
+            RichText::new("what PadForge publishes to Windows")
+                .color(TEXT_FAINT)
+                .size(11.5),
         );
         ui.add_space(SPACE_SM);
         // Status line.
@@ -456,12 +456,16 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
 }
 /// The XInput report being published, live.
 fn monitor_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Telemetry) {
-    card().show(ui, |ui| {
+    // Accented because this is the one panel on the page that answers the
+    // question the page exists for. The other panel configures the output; this
+    // one shows what the OS actually received, and a reader who only reads one
+    // panel should be reading this one.
+    card_accent().show(ui, |ui| {
+        heading(ui, "What games see");
         ui.label(
-            RichText::new("What games see")
-                .color(TEXT)
-                .size(15.0)
-                .strong(),
+            RichText::new("the report Windows is being handed right now")
+                .color(TEXT_FAINT)
+                .size(11.5),
         );
         ui.add_space(SPACE_SM);
         if !t.output_connected {

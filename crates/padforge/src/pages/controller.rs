@@ -140,9 +140,15 @@ fn axis_card(
 
         for (index, axis) in [ax, ay].iter().enumerate() {
             if index == 1 {
-                divider(ui);
+                ui.add_space(SPACE_SM);
+                // A recessed panel around the second axis rather than a rule
+                // between them. With a rule the two halves read as one list, so
+                // a reader cannot tell at a glance that a DualShock has two
+                // independent axes here and they are configured separately.
+                card_quiet().show(ui, |ui| edit_one_axis(ui, ctx, *axis));
+            } else {
+                edit_one_axis(ui, ctx, *axis);
             }
-            edit_one_axis(ui, ctx, *axis);
         }
     });
 }

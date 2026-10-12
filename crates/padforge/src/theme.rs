@@ -24,7 +24,15 @@ pub const TEXT: Color32 = Color32::from_rgb(0xE6, 0xEA, 0xF2);
 /// Secondary text: labels, hints.
 pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8B, 0x94, 0xA6);
 /// Tertiary text: disabled states.
-pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x5A, 0x62, 0x72);
+///
+/// Lifted from `#5A6272`, which measured 2.8:1 against the card surface. That
+/// is the colour every hint line under every control was drawn in, and 2.8:1
+/// is not readable — a hint nobody can read is not a hint.
+///
+/// The value is set by the *darkest* surface it appears on rather than the most
+/// common one: `SURFACE_HOVER` is a click away from any control, so a tier that
+/// only clears the card surface loses readability the moment the pointer lands.
+pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x84, 0x8F, 0xA2);
 
 /// The lightbar cyan, used for anything active.
 pub const ACCENT: Color32 = Color32::from_rgb(0x35, 0xD0, 0xE8);
@@ -180,12 +188,70 @@ pub fn install(ctx: &egui::Context) {
 }
 
 /// A subtle card frame used throughout the UI.
+///
+/// Not the only one: a page that puts every panel at the same weight has no
+/// hierarchy at all, and the eye has nowhere to land first. [`card`] is the
+/// standard panel, [`card_quiet`] steps back for groups that are supporting
+/// detail, and [`card_accent`] marks the one panel on a page that a change
+/// elsewhere in the app affects most.
 pub fn card() -> egui::Frame {
     egui::Frame::new()
         .fill(SURFACE_RAISED)
         .stroke(Stroke::new(1.0, BORDER))
         .corner_radius(RADIUS_MD)
         .inner_margin(MarginF32::same(SPACE_MD))
+}
+
+/// A recessed card, for detail that supports a panel rather than standing
+/// beside it.
+///
+/// Darker and borderless rather than merely dimmer: a recessed panel that keeps
+/// its outline still competes for attention, because an outline is what the eye
+/// reads first. Dropping the border is what makes it recede.
+pub fn card_quiet() -> egui::Frame {
+    egui::Frame::new()
+        .fill(SURFACE)
+        .stroke(Stroke::NONE)
+        .corner_radius(RADIUS_MD)
+        .inner_margin(MarginF32::same(SPACE_SM))
+}
+
+/// The one panel on a page that matters most.
+///
+/// Accent on the left edge only. A full accent border would shout on every card
+/// it was used on, and the point of having this is that there is only ever one
+/// such card per page.
+pub fn card_accent() -> egui::Frame {
+    egui::Frame::new()
+        .fill(SURFACE_RAISED)
+        .stroke(Stroke::new(1.0, ACCENT_DIM))
+        .corner_radius(RADIUS_MD)
+        .inner_margin(MarginF32::same(SPACE_MD))
+}
+
+/// A heading, set larger than any body text and carrying a count of its items.
+///
+/// A section label and a section title are different jobs, and the old design
+/// used the label for both. Small, wide-tracked, faint capitals work as a label
+/// above a group; the title of the group itself needs to be readable at a glance
+/// from across the desk.
+pub fn heading(ui: &mut egui::Ui, title: &str) {
+    ui.label(egui::RichText::new(title).color(TEXT).size(15.0).strong());
+}
+
+/// The small wide-tracked label that sits above a group of controls.
+///
+/// Capitalised with tracking rather than joined, because a joined lowercase word
+/// at eleven points is the shape that reads as a placeholder rather than a
+/// label.
+pub fn eyebrow(ui: &mut egui::Ui, title: &str) {
+    ui.label(
+        egui::RichText::new(title.to_uppercase())
+            .color(TEXT_FAINT)
+            .size(10.5)
+            .strong()
+            .extra_letter_spacing(1.2),
+    );
 }
 
 /// A full-bleed section separator.
@@ -256,14 +322,13 @@ pub fn pill(ui: &mut egui::Ui, label: &str, color: Color32) {
 }
 
 /// Section heading with a hairline underneath.
+///
+/// Built from [`eyebrow`] and [`divider`] rather than repeating them, so a
+/// section's two halves cannot drift apart the way two copies of the same rule
+/// eventually do.
 pub fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(SPACE_SM);
-    ui.label(
-        egui::RichText::new(title.to_uppercase())
-            .color(TEXT_FAINT)
-            .size(11.0)
-            .strong(),
-    );
+    eyebrow(ui, title);
     divider(ui);
 }
 
@@ -276,6 +341,86 @@ mod tests {
         assert_eq!(battery_color(0.0), DANGER);
         assert_eq!(battery_color(0.2), WARNING);
         assert_eq!(battery_color(0.9), SUCCESS);
+    }
+
+    /// Relative luminance of a packed sRGB colour, per WCAG 2.x.
+    fn luminance(c: Color32) -> f32 {
+        fn channel(v: u8) -> f32 {
+            let v = v as f32 / 255.0;
+            if v <= 0.039_28 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+    }
+
+    /// WCAG contrast ratio between two colours.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let (hi, lo) = {
+            let (x, y) = (luminance(a), luminance(b));
+            if x > y {
+                (x, y)
+            } else {
+                (y, x)
+            }
+        };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn every_text_tier_is_readable_on_every_surface_it_lands_on() {
+        // 4.5:1 is the WCAG AA minimum for body text, and a hint line under a
+        // control is body text. The old third tier measured 2.8:1 against the
+        // card surface and this test is why that cannot happen again.
+        for (name, text) in [
+            ("TEXT", TEXT),
+            ("TEXT_MUTED", TEXT_MUTED),
+            ("TEXT_FAINT", TEXT_FAINT),
+        ] {
+            for (surface_name, surface) in [
+                ("BACKDROP", BACKDROP),
+                ("SURFACE", SURFACE),
+                ("SURFACE_RAISED", SURFACE_RAISED),
+                ("SURFACE_HOVER", SURFACE_HOVER),
+            ] {
+                let ratio = contrast(text, surface);
+                assert!(
+                    ratio >= 4.5,
+                    "{name} on {surface_name} is {ratio:.2}:1, below the 4.5:1 minimum"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_accent_and_status_colours_clear_text_minimums_too() {
+        // Status is carried by colour, so it is never the only carrier — but the
+        // text next to it still has to be readable, and a saturated hue on a
+        // dark card is exactly where that quietly fails.
+        for (name, c) in [
+            ("ACCENT", ACCENT),
+            ("SUCCESS", SUCCESS),
+            ("WARNING", WARNING),
+            ("DANGER", DANGER),
+            ("WIRELESS", WIRELESS),
+        ] {
+            let ratio = contrast(c, SURFACE_RAISED);
+            assert!(
+                ratio >= 4.5,
+                "{name} on a card is {ratio:.2}:1, below the 4.5:1 minimum"
+            );
+        }
+    }
+
+    #[test]
+    fn the_quiet_card_really_does_recede() {
+        // The hierarchy is only worth having if it is visible: the quiet card
+        // has to sit measurably below the standard one against the backdrop,
+        // or the two are decoration.
+        assert!(luminance(SURFACE) < luminance(SURFACE_RAISED));
+        assert!(contrast(SURFACE, BACKDROP) < contrast(SURFACE_RAISED, BACKDROP));
     }
 
     #[test]
