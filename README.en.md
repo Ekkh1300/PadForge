@@ -10,41 +10,27 @@
 
 Windows games speak XInput; a DualShock 4 speaks HID. That mismatch is the whole
 reason this app exists: PadForge reads the pad's real HID report, reshapes every
-axis, remaps every button, and republishes the result as a virtual Xbox 360 gamepad
-that any game already knows how to talk to.
+axis, remaps every button, and republishes the result as a virtual gamepad —
+either an **Xbox 360** or a **DualShock 4**, whichever you pick.
 
 Written in Rust, with an egui interface built for tuning rather than for showing
 off.
 
 ---
 
-## Installing
+## Screenshots
 
-Download `PadForge-Setup.exe` from the releases page and run it. A small dialog
-opens: pick where to install (or accept the default) and tick the shortcuts you
-want. Nothing needs administrator rights.
+| Dashboard — live report, rumble, page shortcuts | Test — every part scored |
+|---|---|
+| <img src="docs/ui-dashboard.png" alt="Dashboard" width="420"> | <img src="docs/ui-test.png" alt="Test page" width="420"> |
 
-It installs for your user account into `%LOCALAPPDATA%\Programs\PadForge` and
-registers itself under **Settings ‹ Apps** so Windows can uninstall it normally.
-Your profiles in `%APPDATA%\PadForge` are left alone, so reinstalling picks up
-where you left off.
+| Output — what games see, and the pad's shape | Racing — wheel and pedals |
+|---|---|
+| <img src="docs/ui-output.png" alt="Output page" width="420"> | <img src="docs/ui-racing.png" alt="Racing page" width="420"> |
 
-For unattended installs:
-
-```
-PadForge-Setup.exe /S                 silent, default choices
-PadForge-Setup.exe /D=C:\PadForge     install elsewhere
-PadForge-Setup.exe --uninstall        remove it
-PadForge-Setup.exe --help             this text
-```
-
-You will also need the **ViGEmBus** driver for input to reach games; see below.
-
-![the installer](docs/installer.png)
-
-The installer is drawn with native Win32 and GDI rather than a GPU renderer: it
-has no dependencies beyond `windows-sys`, and it works even on a machine whose
-graphics driver is unhappy.
+| Controller — sticks, triggers, lightbar | Settings |
+|---|---|
+| <img src="docs/ui-controller.png" alt="Controller page" width="420"> | <img src="docs/ui-settings.png" alt="Settings page" width="420"> |
 
 ## What it does
 
@@ -68,7 +54,31 @@ graphics driver is unhappy.
   hotkey, or automatically when a matching program comes to the foreground.
   Import and export as JSON.
 - **Lightbar.** Colour, brightness, and animation (steady, breathe, flash,
-  rainbow, blue, pulse-fade), written back to the pad.
+  **rainbow**, blue, pulse-fade), written back to the pad. The speed is
+  adjustable for **every animated mode**, rainbow included.
+- **Pick the output shape.** Whichever pad you plug in, Windows can see it as an
+  **Xbox 360** or a **DualShock 4**. That is not cosmetic: a DualShock 4 is a HID
+  device, so programs that talk to a pad directly — emulators, Steam, anything
+  that wants Share and Options by name — see a real DS4, while games that only
+  understand Xbox pads will not list it at all. The cost is stated on the same
+  page: in the DualShock 4 shape a game's rumble does not come back, because the
+  driver's DS4 target has no notification channel.
+- **Virtual slot.** Publish as Player 1 to Player 4, or let the system choose.
+  The driver picks the slot, so when the requested one is taken the app says
+  honestly where the pad ended up rather than claiming the request took.
+- **Racing.** Draws the steering axis as a real wheel and turns it live from the
+  pad or from a wheel, and samples the response curve on the actual motor filter
+  rather than on a hand-written approximation — so if the map and the motor ever
+  disagree, the map is to blame. Three presets, **Sim**, **Arcade** and **Drift**,
+  each one a coherent shape across the wheel and both pedals.
+- **Real wheels.** Any HID device that calls itself a joystick is read, with no
+  table of supported models in the code. Every target is learned by moving that
+  control, and each has its own deadzone and sensitivity.
+- **Test page.** A pad can be assumed healthy and be wrong. Operate each control
+  once and its row turns green and stays green — a switch that worked once works
+  every time, and the one that did not is what you came to find. 20 parts, from
+  the sticks and triggers through all four d-pad directions, the stick clicks,
+  Share and Options, the touchpad and the motion sensors.
 - **Calibration.** Learns each pad's resting stick position automatically, so a
   worn stick still reads centred.
 - **Stays out of the way.** Notification-area icon, close-to-tray, pause toggle,
@@ -82,6 +92,34 @@ graphics driver is unhappy.
   so.
   - 64-bit: <https://github.com/nefarius/ViGEmBus/releases>
 - A Rust toolchain for building: <https://rustup.rs/>
+
+## Installing
+
+Download `PadForge-Setup.exe` from the releases page and run it. A small dialog
+opens: pick where to install (or accept the default) and tick the shortcuts you
+want. Nothing needs administrator rights.
+
+It installs for your user account into `%LOCALAPPDATA%\Programs\PadForge` and
+registers itself under **Settings ‹ Apps** so Windows can uninstall it normally.
+Your profiles in `%APPDATA%\PadForge` are left alone, so reinstalling picks up
+where you left off.
+
+For unattended installs:
+
+```
+PadForge-Setup.exe /S                 silent, default choices
+PadForge-Setup.exe /D=C:\PadForge     install elsewhere
+PadForge-Setup.exe --uninstall        remove it
+PadForge-Setup.exe --help             this text
+```
+
+Options: `--no-desktop-shortcut`, `--autostart`, `--no-launch`.
+
+![the installer](docs/installer.png)
+
+The installer is drawn with native Win32 and GDI rather than a GPU renderer: it
+has no dependencies beyond `windows-sys`, and it works even on a machine whose
+graphics driver is unhappy.
 
 ## Building
 
@@ -156,14 +194,14 @@ loss.
 
 ## Status
 
-Complete and tested: 130 tests pass, `cargo fmt` and `cargo clippy` are clean under
-`-D warnings`, and rustdoc builds without warnings. CI runs all of it on every
-push.
+Complete and tested: **224 tests pass**, `cargo fmt` and `cargo clippy` are clean
+under `-D warnings`, and rustdoc builds without warnings. CI runs all of it on
+every push.
 
-**Tested against real hardware.** A DualShock 4 v2 arrived over Bluetooth and found
-four bugs that no unit test could have: all four produced clean data rather than
-an error, so nothing crashed and nothing looked wrong until the values were
-checked against physics.
+**Tested against real hardware.** A DualShock 4 v2 arrived over Bluetooth and then
+over USB, and found eight bugs that no unit test could have: all of them produced
+clean data rather than an error, so nothing crashed and nothing looked wrong until
+the values were checked against physics.
 
 - The Bluetooth report id is `0x11`, not `0x01`. Only `0x01` was accepted, so
   every Bluetooth frame was discarded and a connected pad presented as one that
@@ -176,6 +214,18 @@ checked against physics.
 - A Bluetooth DS4 exposes several HID collections at once. The code opened the
   first, which succeeds and then **blocks in `read()` forever**. Silent interfaces
   are now identified and stepped over.
+- **The output report never reached the pad.** The write path used the feature
+  report buffer, which is 64 bytes on this pad, while the Bluetooth output report
+  is 78 — so every write was refused. Input arrived in full, which is exactly why
+  it looked like two separate bugs.
+- **The USB report layout was wrong.** The report id landed in the wrong byte, so
+  it was never `0x05`, and the RGB colour landed on offsets 1 to 3, where the
+  capability mask lives.
+- **The lightbar only ran Steady.** The mode ComboBox was the only control that
+  never pushed the profile to the engine, and the engine takes its own copy of the
+  lightbar once, when a profile is applied.
+- **The app never noticed a change of connection.** Pull the pad off Bluetooth and
+  plug it in over USB and the app searched for a pad forever.
 
 That third bug is also why the mouse moved on its own: a wrong gyro offset reads
 hundreds of times too large and feeds straight into `SendInput`. Measured with the
@@ -191,11 +241,15 @@ physical plausibility rather than byte equality — a still pad reads about 1 g,
 neither 0 g nor 4 g is a state a pad can be in. A fixture typed by hand is exactly
 what ends up enshrining the bug.
 
-One thing is **not** verified: how the main interface actually looks. Every
-egui/glow window on the machine this was developed on renders as a solid white
-rectangle. That is a graphics driver problem rather than an application one — a
-minimal egui example sharing no code renders identically white. See
-[issue #1](https://github.com/Ekkh1300/PadForge/issues/1).
+**Newest hardware check:** selecting the DualShock 4 output shape made Windows
+enumerate a second Sony controller, `HID\VID_054C&PID_05C4`, while the physical pad
+stayed on `VID_054C&PID_09CC`.
+
+The interface is drawn with **wgpu / Direct3D 12** and has been seen rendering
+correctly on this machine. Previously every egui/glow window on the AMD
+RX 6700 XT rendered as a solid white rectangle — a minimal egui example sharing no
+code renders identically white, so that was a graphics driver problem rather than
+an application one. See [issue #1](https://github.com/Ekkh1300/PadForge/issues/1).
 
 Four capabilities from DS4Windows are also not ported yet, listed in
 [issue #2](https://github.com/Ekkh1300/PadForge/issues/2).
@@ -224,7 +278,8 @@ crates/
     pointer.rs     gyro/touchpad to real mouse input
     touchpad.rs    touchpad routing and gestures
     mapping.rs     control and target enums
-    output.rs      virtual gamepad publication
+    output.rs      virtual gamepad publication (Xbox 360 or DualShock 4)
+    wheel.rs       HID wheel parsing and target learning
     profile.rs     profiles and persistence
     engine.rs      the loop that ties it together
   padforge/        the egui application

@@ -22,6 +22,9 @@ tools/_pulse*.png
 !docs/icon-128.png
 !docs/icon-512.png
 !docs/icon-sizes.png
+# The UI screenshots are documentation, not development debris: a README whose
+# pictures only exist on the machine that wrote it is a README with holes in it.
+!docs/ui-*.png
 
 # Binaries and debug symbols
 *.exe
