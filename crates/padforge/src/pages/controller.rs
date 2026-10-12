@@ -310,20 +310,29 @@ fn lightbar_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::T
         ui.horizontal(|ui| {
             ui.label(RichText::new("mode").color(TEXT_MUTED));
             let current = ctx.state.editing_profile().lightbar.mode;
+            let mut changed = false;
             egui::ComboBox::from_id_salt("lightbar_mode")
                 .selected_text(current.label())
                 .width(140.0)
                 .show_ui(ui, |ui| {
                     for mode in padcore::profile::LightbarMode::ALL {
-                        let selected = current == *mode;
-                        ui.selectable_value(
-                            &mut ctx.state.editing_profile_mut().lightbar.mode,
-                            *mode,
-                            mode.label(),
-                        );
-                        let _ = selected;
+                        changed |= ui
+                            .selectable_value(
+                                &mut ctx.state.editing_profile_mut().lightbar.mode,
+                                *mode,
+                                mode.label(),
+                            )
+                            .changed();
                     }
                 });
+            // The engine keeps its own copy of the profile's lightbar, taken
+            // once when the profile is applied, so a mode picked here changes
+            // the stored profile and nothing else until the store goes across.
+            // Colour, brightness and speed all push; mode was the one control
+            // that did not, which is why every mode looked like Steady.
+            if changed {
+                push_store(ctx);
+            }
         });
 
         // Rainbow and Blue have fixed colours, so a picker would mislead.
@@ -365,12 +374,12 @@ fn lightbar_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::T
             push_store(ctx);
         }
 
-        if matches!(
-            mode,
-            padcore::profile::LightbarMode::Flash
-                | padcore::profile::LightbarMode::Breathe
-                | padcore::profile::LightbarMode::PulseFade
-        ) {
+        // Every mode that moves gets the speed, which is the honest test for
+        // this rather than a list of the three that were remembered. Rainbow
+        // cycles and Breathe swells, and listing modes by hand is how Rainbow
+        // ended up with a speed that could not be set: the slider was only
+        // offered for a handful of them.
+        if !fixed_colour {
             let mut rate = ctx.state.editing_profile().lightbar.rate;
             if ui
                 .add(

@@ -823,6 +823,29 @@ mod tests {
     }
 
     #[test]
+    fn animated_lightbar_modes_actually_move() {
+        const BASE: [u8; 3] = [10, 180, 250];
+        for mode in LightbarMode::ALL {
+            // One whole cycle, sampled finely enough that any animation is
+            // caught in the act.
+            let samples: Vec<[u8; 3]> = (0..64)
+                .map(|i| mode.colour_at(BASE, i as f32 / 64.0))
+                .collect();
+            let moves = samples.windows(2).any(|w| w[0] != w[1]);
+            match mode {
+                // These two are solid by definition.
+                LightbarMode::Steady | LightbarMode::Blue => {
+                    assert!(!moves, "{} must not change colour", mode.label());
+                }
+                // An animation that never changes colour is indistinguishable
+                // from Steady, which is exactly how a broken lightbar mode
+                // shows up in the hand.
+                _ => assert!(moves, "{} never changes colour", mode.label()),
+            }
+        }
+    }
+
+    #[test]
     fn axis_settings_round_trip_through_filter() {
         let a = AxisSettings {
             deadzone: 0.15,

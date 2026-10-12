@@ -1364,6 +1364,11 @@ impl Engine {
                         p.lightbar.mode = LightbarMode::ALL[(i + 1) % LightbarMode::ALL.len()];
                         p.lightbar.mode
                     };
+                    // The engine's live copy of the lightbar is taken once, when
+                    // the profile is applied. Rewriting the stored profile alone
+                    // moves nothing: the light kept whatever mode it was applied
+                    // with, so the cycle key reported a change the pad never saw.
+                    self.apply_profile();
                     self.emit(EventLevel::Info, format!("Lightbar: {}", next.label()));
                 }
                 HotkeyAction::Recalibrate => {
