@@ -33,7 +33,7 @@ use crate::gdi::{self, darken, lighten, palette, Owned, Painter};
 /// Window size. The dialog is deliberately narrow: it is one decision, not a
 /// wizard, and a wide box with three checkboxes reads as a settings page.
 const W: i32 = 560;
-const H: i32 = 452;
+const H: i32 = 470;
 
 /// The clickable regions, laid out from the client size and hit-tested against.
 #[derive(Clone, Copy)]
@@ -99,8 +99,9 @@ impl Layout {
         let card_rect = rect(M, Self::CARD_TOP, inner, card_bottom - Self::CARD_TOP);
 
         // The status line sits between the card and the buttons, with room for
-        // two lines so a long warning wraps instead of running off the window.
-        let status = rect(M, card_bottom + 14, inner, 40);
+        // three lines so the driver warning — which now carries a URL — wraps
+        // instead of running off the window.
+        let status = rect(M, card_bottom + 14, inner, 54);
 
         Self {
             card: card_rect,
@@ -195,11 +196,15 @@ impl State {
         let mut kind = StatusKind::Info;
 
         // Say up front that games will not see the pad without the driver, rather
-        // than leaving the user to work it out after installing.
+        // than leaving the user to work it out after installing. The URL is part
+        // of the sentence: a warning with nowhere to go is just bad news.
         if !crate::vigem_installed() {
-            status = "Note: games need the ViGEmBus driver, which is not installed yet. \
-                      PadForge will still install and run."
-                .to_string();
+            status = format!(
+                "Note: games will not see the pad until the ViGEmBus driver is installed. \
+                 {app} installs and runs without it. Get the driver from {url}",
+                app = crate::APP_NAME,
+                url = crate::VIGEM_URL,
+            );
             kind = StatusKind::Warn;
         }
 

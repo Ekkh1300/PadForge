@@ -17,6 +17,12 @@
 //!   padforge-installer --uninstall     remove an existing installation
 //!   padforge-installer --help          this text
 
+// A windowed subsystem, so double-clicking setup never opens a console window.
+// Windows still hands a program like this the standard handles of whatever
+// started it, so running it from a terminal prints the summary just the same —
+// only the window that nobody asked for stops existing.
+#![windows_subsystem = "windows"]
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -355,7 +361,11 @@ pub fn install_into(
 
     if launch_after {
         // Best effort: failing to start the app must not fail the install.
-        let _ = std::process::Command::new(&app_path).spawn();
+        // Detached on purpose, so the app does not hold the installer's console
+        // open behind it — see `win::launch_detached`.
+        if let Err(e) = win::launch_detached(&app_path, dir) {
+            warn(&format!("could not start {APP_NAME}: {e}"));
+        }
     }
 
     // Explorer caches file icons hard, so a newly installed binary can keep the

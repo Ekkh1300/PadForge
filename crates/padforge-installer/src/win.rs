@@ -440,6 +440,46 @@ pub fn delete_reg_key(key_path: &str) {
     }
 }
 
+/// Start the application in its own process, with nothing of ours attached.
+///
+/// Two things go wrong when the app is started plainly as this installer's own
+/// child, and both look like "the installer never finishes".
+///
+/// A child inherits its parent's console whether or not it is a GUI program, so
+/// one black window sits on the desktop for exactly as long as the app runs. The
+/// window belongs to the console rather than to the installer, so it outlives
+/// the installer's exit — and anything waiting on the installer waits for that
+/// window.
+///
+/// Worse, Windows records the PID of whatever created a process and keeps that
+/// record after the creator is gone. The app therefore stays in the installer's
+/// process tree forever, and anything walking that tree — `Start-Process -Wait`
+/// included — waits for the app rather than for the install, so a scripted
+/// install never returns while the install itself completed seconds earlier.
+///
+/// `cmd /C start` is what fixes both: `start` is what actually creates the app,
+/// so the recorded parent is `cmd`, and `cmd` exits at once. The installer's
+/// tree is empty the moment it returns, and `DETACHED_PROCESS` stops `cmd` from
+/// having a console to hand down in the first place.
+pub fn launch_detached(path: &Path, cwd: &Path) -> Result<(), String> {
+    /// Do not attach the new process to, or give it, a console.
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    use std::os::windows::process::CommandExt;
+
+    // `raw_arg` because `start` reads its first quoted argument as the window
+    // title, and Rust's own quoting would put the path in that slot instead.
+    // The empty `""` is the title, and the path is the command to run.
+    let quoted = format!("\"{}\"", path.display());
+    std::process::Command::new("cmd")
+        .raw_arg(format!("/C start \"\" {quoted}"))
+        .current_dir(cwd)
+        .creation_flags(DETACHED_PROCESS)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not start {}: {e}", path.display()))
+}
+
 /// Whether the ViGEmBus virtual gamepad driver is present.
 ///
 /// PadForge runs without it, but input will not reach games, so the installer
