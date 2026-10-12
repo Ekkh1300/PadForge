@@ -375,10 +375,22 @@ impl App {
 
         for page in Page::ALL {
             let selected = self.state.page == *page;
-            let text = RichText::new(format!("{}  {}", page.tag(), page.title()))
-                .color(if selected { BACKDROP } else { TEXT_MUTED })
-                .size(13.0);
-            let button = egui::Button::new(text)
+            // The number stays dim when the row is not selected. It is a
+            // position, not a step in a sequence, and dimming it is what keeps
+            // a decorative number from competing with the page's actual name.
+            // A Button rather than hand-painted text and a manual interact: it already
+            // resolves hover, click and keyboard focus, and the accent fill is
+            // what marks the current page.
+            //
+            // egui's Button lays a single RichText out, so the two runs are
+            // joined into one. The tag is dimmed when the row is not selected
+            // because it is a position, not a step in a sequence, and dimming
+            // keeps a decorative number from competing with the page's name.
+            let label = egui::RichText::new(format!("{}   {}", page.tag(), page.title()))
+                .color(if selected { BACKDROP } else { TEXT })
+                .size(13.0)
+                .strong();
+            let button = egui::Button::new(label)
                 .fill(if selected {
                     ACCENT
                 } else {
@@ -386,8 +398,13 @@ impl App {
                 })
                 .stroke(Stroke::NONE)
                 .corner_radius(RADIUS_SM)
-                .min_size(egui::vec2(ui.available_width(), 32.0));
-            if ui.add(button).clicked() {
+                .min_size(egui::vec2(ui.available_width(), 34.0));
+            // The blurb as hover text: the rail names nine pages, and the one
+            // sentence each is for is already written and shown on the
+            // dashboard's tiles. Saying it here too means a page is never
+            // something you have to open to find out what it is for.
+            let response = ui.add(button).on_hover_text(page.blurb());
+            if response.clicked() {
                 self.state.page = *page;
             }
             ui.add_space(2.0);

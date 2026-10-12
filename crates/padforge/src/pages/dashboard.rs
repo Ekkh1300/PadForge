@@ -182,25 +182,29 @@ fn navigate(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
 }
 
 /// A card that acts as one big button.
+///
+/// The hovered state is chosen *before* the card is drawn. Painting a wash
+/// afterwards -- which is what this used to do -- lays a translucent film over
+/// the title and the blurb, and those two pieces of text are the entire reason
+/// the tile exists. It also used a white wash at 8/255, which is too faint to
+/// register as feedback at all.
 fn tile(ui: &mut egui::Ui, ctx: &mut super::Ctx, page: Page, name: &str, sub: &str) {
-    let inner = card().show(ui, |ui| {
+    let probe = ui.interact(
+        ui.available_rect_before_wrap(),
+        ui.make_persistent_id(("tile", page.title())),
+        egui::Sense::click(),
+    );
+    let frame = if probe.hovered() || probe.clicked() {
+        card_accent()
+    } else {
+        card()
+    };
+    frame.show(ui, |ui| {
         ui.set_min_height(28.0);
         ui.label(RichText::new(name).color(TEXT).size(14.0).strong());
         ui.label(RichText::new(sub).color(TEXT_FAINT).size(11.0));
     });
-    let hit = ui.interact(
-        inner.response.rect,
-        inner.response.id.with("tile"),
-        egui::Sense::click(),
-    );
-    if hit.hovered() {
-        ui.painter().rect_filled(
-            inner.response.rect,
-            RADIUS_MD,
-            egui::Color32::from_white_alpha(8),
-        );
-    }
-    if hit.clicked() {
+    if probe.clicked() {
         ctx.state.page = page;
     }
 }
