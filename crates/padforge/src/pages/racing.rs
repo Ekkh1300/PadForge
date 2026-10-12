@@ -247,10 +247,18 @@ fn picker(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
     ui.horizontal(|ui| {
         let wheels = &ctx.state.wheels;
         if wheels.is_empty() {
+            // Said plainly rather than left as a dead end. The page still works
+            // without a wheel — the left stick steers and L2/R2 are the pedals,
+            // which is how a pad plays these games anyway — so the honest thing
+            // is to say that, not to imply the page has nothing to offer.
             ui.label(
-                RichText::new("no joystick found — plug one in and it appears here")
-                    .color(TEXT_FAINT)
-                    .size(11.5),
+                RichText::new(
+                    "no joystick found — plug a wheel in and it appears here. \
+                     Without one, steering comes from the pad's left stick and \
+                     the pedals from L2 and R2.",
+                )
+                .color(TEXT_FAINT)
+                .size(11.5),
             );
         } else {
             let chosen = ctx.state.settings.wheel.device.clone();

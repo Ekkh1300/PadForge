@@ -441,6 +441,43 @@ fn monitor_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
         let rows = button_row.len().div_ceil(per_row).max(1);
         ui.allocate_space(egui::vec2(row_w, rows as f32 * (CHIP_H + GAP)));
         ui.add_space(SPACE_MD);
+        // Where the sticks are, not merely how far an axis has moved. A bar
+        // cannot show a diagonal, and a diagonal is the first thing worth
+        // checking when a binding feels wrong.
+        ui.label(
+            RichText::new("STICKS")
+                .color(TEXT_FAINT)
+                .size(11.0)
+                .strong(),
+        );
+        ui.add_space(SPACE_XS);
+        let stick_w = ((ui.available_width() - SPACE_MD) * 0.5).max(80.0);
+        let to_unit = |v: i16| v as f32 / i16::MAX as f32;
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(stick_w);
+                widgets::stick_plot(
+                    ui,
+                    "left stick",
+                    to_unit(out.thumb_lx),
+                    to_unit(out.thumb_ly),
+                    ACCENT,
+                );
+            });
+            ui.vertical(|ui| {
+                ui.set_width(stick_w);
+                widgets::stick_plot(
+                    ui,
+                    "right stick",
+                    to_unit(out.thumb_rx),
+                    to_unit(out.thumb_ry),
+                    ACCENT,
+                );
+            });
+        });
+        ui.add_space(SPACE_MD);
+        divider(ui);
+        ui.add_space(SPACE_MD);
         // Axes, in XInput's own units, which is what a game actually reads.
         ui.label(RichText::new("AXES").color(TEXT_FAINT).size(11.0).strong());
         ui.add_space(SPACE_XS);

@@ -1,4 +1,5 @@
-//! Settings page: window behaviour, startup, hotkeys, logs, and diagnostics.
+//! Settings page: general, auto profiles, hotkeys, and diagnostics, each in its
+//! own card.
 use crate::state::ToastLevel;
 use crate::theme::*;
 use egui::{RichText, Stroke};
@@ -16,10 +17,10 @@ pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
     };
     ui.columns(2, |cols| {
         general(&mut cols[0], ctx);
-        hotkeys(&mut cols[1], ctx, &keys);
+        auto_profiles(&mut cols[0], ctx);
     });
     ui.columns(2, |cols| {
-        startup(&mut cols[0], ctx);
+        hotkeys(&mut cols[1], ctx, &keys);
         diagnostics(&mut cols[1], ctx);
     });
 }
@@ -28,52 +29,66 @@ fn general(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
     card().show(ui, |ui| {
         ui.label(RichText::new("General").color(TEXT).size(15.0).strong());
         ui.add_space(SPACE_MD);
-        let s = &mut ctx.state.settings;
-        ui.checkbox(
-            &mut s.minimize_on_close,
-            "Keep running when the window is closed",
-        );
-        ui.label(
-            RichText::new(
-                "PadForge stays in the notification area so a game keeps receiving input.",
-            )
-            .color(TEXT_FAINT)
-            .size(11.5),
-        );
-        ui.add_space(SPACE_SM);
-        ui.checkbox(&mut s.start_minimized, "Start hidden in the tray");
-        ui.checkbox(
-            &mut s.auto_reapply_profile,
-            "Re-apply the profile on reconnect",
-        );
+        // Scoped so the settings borrow ends before the autostart row, which
+        // reads the registry rather than the settings struct, needs `ctx` again.
+        {
+            let s = &mut ctx.state.settings;
+            ui.checkbox(
+                &mut s.minimize_on_close,
+                "Keep running when the window is closed",
+            );
+            ui.label(
+                RichText::new(
+                    "PadForge stays in the notification area so a game keeps receiving input.",
+                )
+                .color(TEXT_FAINT)
+                .size(11.5),
+            );
+            ui.add_space(SPACE_SM);
+            ui.checkbox(&mut s.start_minimized, "Start hidden in the tray");
+            ui.checkbox(
+                &mut s.auto_reapply_profile,
+                "Re-apply the profile on reconnect",
+            );
+        }
         ui.add_space(SPACE_MD);
         divider(ui);
         ui.add_space(SPACE_MD);
         ui.label(
-            RichText::new("AUTO PROFILES")
+            RichText::new("START WITH WINDOWS")
                 .color(TEXT_FAINT)
                 .size(11.0)
                 .strong(),
         );
         ui.add_space(SPACE_SM);
-        ui.checkbox(
-            &mut s.auto_profiles_enabled,
-            "Switch profiles by foreground window",
-        );
-        let mut interval = s.auto_profile_interval_ms as f32;
+        let mut autostart = padcore::settings::autostart_enabled();
         if ui
-            .add(
-                egui::Slider::new(&mut interval, 100.0..=3000.0)
-                    .text("check every")
-                    .suffix(" ms")
-                    .step_by(50.0)
-                    .show_value(true),
-            )
+            .checkbox(&mut autostart, "Start PadForge when I log in")
             .changed()
         {
-            s.auto_profile_interval_ms = interval.round() as u64;
-            push(ctx);
+            match padcore::settings::set_autostart(autostart) {
+                Ok(()) => {
+                    ctx.state.toast(
+                        if autostart {
+                            "Added to the Run registry key"
+                        } else {
+                            "Removed from the Run registry key"
+                        },
+                        ToastLevel::Success,
+                    );
+                }
+                Err(e) => ctx
+                    .state
+                    .toast(format!("Could not update startup: {e}"), ToastLevel::Error),
+            }
         }
+        ui.label(
+            RichText::new(
+                "Implemented with the current-user Run key, so no administrator rights are needed.",
+            )
+            .color(TEXT_FAINT)
+            .size(11.5),
+        );
         ui.add_space(SPACE_MD);
         ui.horizontal(|ui| {
             if secondary_button(ui, "Save settings").clicked() {
@@ -92,6 +107,55 @@ fn general(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
             }
         });
     });
+}
+/// Profile switching by foreground window.
+fn auto_profiles(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
+    let mut dirty = false;
+    card().show(ui, |ui| {
+        ui.label(
+            RichText::new("Auto profiles")
+                .color(TEXT)
+                .size(15.0)
+                .strong(),
+        );
+        ui.add_space(SPACE_MD);
+        let s = &mut ctx.state.settings;
+        if ui
+            .checkbox(
+                &mut s.auto_profiles_enabled,
+                "Switch profiles by foreground window",
+            )
+            .changed()
+        {
+            dirty = true;
+        }
+        ui.label(
+            RichText::new(
+                "Give each profile a window title on the Profiles page; the one in \
+                 front decides which applies.",
+            )
+            .color(TEXT_FAINT)
+            .size(11.5),
+        );
+        ui.add_space(SPACE_SM);
+        let mut interval = s.auto_profile_interval_ms as f32;
+        if ui
+            .add(
+                egui::Slider::new(&mut interval, 100.0..=3000.0)
+                    .text("check every")
+                    .suffix(" ms")
+                    .step_by(50.0)
+                    .show_value(true),
+            )
+            .changed()
+        {
+            s.auto_profile_interval_ms = interval.round() as u64;
+            dirty = true;
+        }
+    });
+    if dirty {
+        push(ctx);
+    }
 }
 /// Global hotkeys, with a capture mode.
 fn hotkeys(ui: &mut egui::Ui, ctx: &mut super::Ctx, keys: &[egui::Event]) {
@@ -241,61 +305,7 @@ fn capture_banner(ui: &mut egui::Ui, row: usize, ctx: &mut super::Ctx, keys: &[e
     }
 }
 /// Autostart, and the config location.
-fn startup(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
-    card().show(ui, |ui| {
-        ui.label(RichText::new("Startup").color(TEXT).size(15.0).strong());
-        ui.add_space(SPACE_MD);
-        let mut autostart = padcore::settings::autostart_enabled();
-        if ui
-            .checkbox(&mut autostart, "Start PadForge when I log in")
-            .changed()
-        {
-            match padcore::settings::set_autostart(autostart) {
-                Ok(()) => {
-                    ctx.state.toast(
-                        if autostart {
-                            "Added to the Run registry key"
-                        } else {
-                            "Removed from the Run registry key"
-                        },
-                        ToastLevel::Success,
-                    );
-                }
-                Err(e) => ctx
-                    .state
-                    .toast(format!("Could not update startup: {e}"), ToastLevel::Error),
-            }
-        }
-        ui.label(
-            RichText::new(
-                "Implemented with the current-user Run key, so no administrator rights are needed.",
-            )
-            .color(TEXT_FAINT)
-            .size(11.5),
-        );
-        ui.add_space(SPACE_MD);
-        divider(ui);
-        ui.add_space(SPACE_MD);
-        ui.label(RichText::new("FILES").color(TEXT_FAINT).size(11.0).strong());
-        ui.add_space(SPACE_SM);
-        for (label, path) in [
-            ("Settings", padcore::paths::settings_file()),
-            ("Profiles", padcore::profile::profiles_file()),
-            ("Logs", padcore::paths::logs_dir()),
-        ] {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(label).color(TEXT_MUTED).size(12.0));
-                ui.label(
-                    RichText::new(path.display().to_string())
-                        .color(TEXT_FAINT)
-                        .size(11.0)
-                        .monospace(),
-                );
-            });
-        }
-    });
-}
-/// Logging and a one-shot report.
+/// Logging, live status, and where the files live.
 fn diagnostics(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
     let telemetry = ctx.engine.telemetry();
     card().show(ui, |ui| {
@@ -361,6 +371,26 @@ fn diagnostics(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                     ui.end_row();
                 }
             });
+        ui.add_space(SPACE_MD);
+        divider(ui);
+        ui.add_space(SPACE_MD);
+        ui.label(RichText::new("FILES").color(TEXT_FAINT).size(11.0).strong());
+        ui.add_space(SPACE_SM);
+        for (label, path) in [
+            ("Settings", padcore::paths::settings_file()),
+            ("Profiles", padcore::profile::profiles_file()),
+            ("Logs", padcore::paths::logs_dir()),
+        ] {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(label).color(TEXT_MUTED).size(12.0));
+                ui.label(
+                    RichText::new(path.display().to_string())
+                        .color(TEXT_FAINT)
+                        .size(11.0)
+                        .monospace(),
+                );
+            });
+        }
         ui.add_space(SPACE_MD);
         if secondary_button(ui, "Open the data folder").clicked() {
             let dir = padcore::paths::config_dir();

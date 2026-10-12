@@ -672,6 +672,85 @@ pub fn axis_bar(ui: &mut egui::Ui, label: &str, value: f32, accent: Color32) {
     }
 }
 
+/// A stick's live position, drawn as a dot inside its travel circle.
+///
+/// A bar says how far one axis has moved; it cannot say where the stick *is*,
+/// and the difference is the whole question when a binding feels wrong. The
+/// circle is the stick's full travel, so one resting off-centre is visible
+/// without reading its number, and a diagonal reads as a diagonal.
+pub fn stick_plot(ui: &mut egui::Ui, label: &str, x: f32, y: f32, accent: Color32) {
+    const LABEL_H: f32 = 16.0;
+    const SIZE: f32 = 96.0;
+    const FOOT_H: f32 = 14.0;
+    let total = LABEL_H + SIZE + FOOT_H;
+    let width = ui.available_width().max(SIZE);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, total), Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    painter.text(
+        rect.left_top(),
+        egui::Align2::LEFT_TOP,
+        label,
+        FontId::proportional(11.0),
+        TEXT_MUTED,
+    );
+
+    let field = Rect::from_min_size(
+        Pos2::new(rect.center().x - SIZE * 0.5, rect.min.y + LABEL_H),
+        Vec2::new(SIZE, SIZE),
+    );
+    painter.rect_filled(field, RADIUS_SM, BACKDROP);
+
+    // The travel circle and a neutral crosshair, so "off-centre" is something
+    // the eye can see rather than something the number has to say.
+    let centre = field.center();
+    let radius = SIZE * 0.5 - 4.0;
+    painter.rect_stroke(
+        field,
+        RADIUS_SM,
+        Stroke::new(1.0, BORDER),
+        egui::StrokeKind::Inside,
+    );
+    painter.circle_stroke(centre, radius, Stroke::new(1.0, BORDER));
+    let tick = radius * 0.2;
+    painter.line_segment(
+        [
+            Pos2::new(centre.x - tick, centre.y),
+            Pos2::new(centre.x + tick, centre.y),
+        ],
+        Stroke::new(1.0, BORDER),
+    );
+    painter.line_segment(
+        [
+            Pos2::new(centre.x, centre.y - tick),
+            Pos2::new(centre.x, centre.y + tick),
+        ],
+        Stroke::new(1.0, BORDER),
+    );
+
+    // Clamped to the travel circle: a stick reporting past its own physical
+    // range should read as clamped rather than be drawn off the panel.
+    let (dx, dy) = (x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0));
+    let magnitude = (dx * dx + dy * dy).sqrt();
+    let scale = if magnitude > 1.0 {
+        radius / magnitude
+    } else {
+        radius
+    };
+    // Negated: XInput's Y is up, screen coordinates' Y is down.
+    let dot = Pos2::new(centre.x + dx * scale, centre.y - dy * scale);
+    painter.circle_filled(dot, 5.0, accent);
+    painter.circle_stroke(dot, 5.0, Stroke::new(1.0, BACKDROP));
+
+    painter.text(
+        Pos2::new(rect.center().x, field.bottom() + 2.0),
+        egui::Align2::CENTER_TOP,
+        format!("{dx:+.2}  {dy:+.2}"),
+        FontId::monospace(10.0),
+        TEXT_FAINT,
+    );
+}
+
 /// A unipolar 0..=1 bar for a trigger.
 pub fn trigger_bar(ui: &mut egui::Ui, label: &str, value: f32, pressed: bool) {
     let height = 8.0;
