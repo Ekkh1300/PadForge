@@ -19,14 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-This project was written from scratch as a clean-room reimplementation of the
-DS4Windows concept (reading a Sony DualShock 4 over USB or Bluetooth and
-presenting it to games as an Xbox 360 controller). No DS4Windows code was
-copied. Behavioural details were studied from the published DS4Windows source
-and from observing the DS4 HID reports.
-
-ViGEmBus is a separate, separately licensed driver project by nefarius and is
-not distributed with PadForge. See https://github.com/nefarius/ViGEmBus
