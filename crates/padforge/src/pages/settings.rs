@@ -15,14 +15,65 @@ pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
     } else {
         Vec::new()
     };
-    ui.columns(2, |cols| {
-        general(&mut cols[0], ctx);
-        auto_profiles(&mut cols[0], ctx);
-    });
-    ui.columns(2, |cols| {
-        hotkeys(&mut cols[1], ctx, &keys);
-        diagnostics(&mut cols[1], ctx);
-    });
+    settings_grid(ui, ctx, &keys);
+}
+
+/// The four cards, as two rows of two.
+///
+/// Two `ui.columns` calls back to back is what this used to be, and it put the
+/// second row about 500 px below the first: `columns` fills its columns to the
+/// height of the tallest card and returns, so the next call starts wherever
+/// that pair happened to end rather than where the other pair started.
+///
+/// Both rows are therefore measured before either is drawn. egui does not
+/// report a card's height before drawing it, so each row's height is its
+/// available height and the rows are placed at the top of that -- which lines
+/// them up and lets the page scroll if either row is taller than the window.
+///
+/// Four cards in one row was tried instead and is the wrong shape at this
+/// width: the cards come out narrower than the text inside them, and the
+/// fourth one ends up under the scrollbar.
+fn settings_grid(ui: &mut egui::Ui, ctx: &mut super::Ctx, keys: &[egui::Event]) {
+    const ROWS: usize = 2;
+    let gap = SPACE_MD;
+    let scroll = ui.style().spacing.scroll;
+    let free = ui.available_width() - scroll.bar_width - scroll.floating_allocated_width;
+    let row_h = ui.available_height();
+
+    for row in 0..ROWS {
+        let top = ui.cursor().top();
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(free, if row == 0 { row_h } else { 0.0 }),
+            egui::Sense::hover(),
+        );
+        let _ = rect;
+        let spacing = ui.spacing().item_spacing;
+        ui.spacing_mut().item_spacing.x = gap;
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_size(
+                    egui::pos2(ui.cursor().left(), top),
+                    egui::vec2(free, row_h),
+                ))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                ui.columns(2, |cols| match row {
+                    0 => {
+                        general(&mut cols[0], ctx);
+                        auto_profiles(&mut cols[1], ctx);
+                    }
+                    _ => {
+                        hotkeys(&mut cols[0], ctx, keys);
+                        diagnostics(&mut cols[1], ctx);
+                    }
+                });
+            },
+        );
+        ui.spacing_mut().item_spacing = spacing;
+        if row + 1 < ROWS {
+            ui.allocate_space(egui::vec2(0.0, gap));
+        }
+    }
 }
 /// Window behaviour and general preferences.
 fn general(ui: &mut egui::Ui, ctx: &mut super::Ctx) {

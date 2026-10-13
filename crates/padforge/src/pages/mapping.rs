@@ -34,6 +34,9 @@ pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         }
     });
     // The touchpad as a whole is handled separately from its click button.
+    // The space is explicit because back-to-back `ui.columns` calls have no gap
+    // of their own, and two card rows touching read as one tall card.
+    ui.add_space(SPACE_MD);
     ui.columns(2, |cols| {
         touchpad_card(&mut cols[0], ctx);
         presets_card(&mut cols[1], ctx);
