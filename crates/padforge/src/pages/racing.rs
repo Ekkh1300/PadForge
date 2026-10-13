@@ -407,6 +407,23 @@ fn binding_list(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
     let mut wheel = ctx.state.settings.wheel.clone();
     let mut changed = false;
 
+    // What a wheel usually reports, so binding is a matter of matching rather
+    // than of guessing. Kept short and named by the axis rather than by the
+    // model: these are the HID generic-desktop usages, and the parser says what
+    // it found, so the list is a starting point and not a rule.
+    ui.add(
+        egui::Label::new(
+            RichText::new(
+                "Most wheels report the wheel as X axis, the accelerator as Z axis \
+                 and the brake as X rotation. Pick what your wheel actually lists.",
+            )
+            .color(TEXT_FAINT)
+            .size(11.5),
+        )
+        .wrap(),
+    );
+    ui.add_space(SPACE_SM);
+
     for target in WheelTarget::ALL {
         ui.horizontal(|ui| {
             ui.add_sized(

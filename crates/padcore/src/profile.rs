@@ -85,6 +85,28 @@ impl LightbarMode {
         }
     }
 
+    /// Does the animation speed change anything for this mode?
+    ///
+    /// The question the speed slider asks, and the one place it has to be
+    /// asked: a mode that holds one colour forever does not care how fast time
+    /// passes. This was a list of three modes in the UI, which is how Rainbow
+    /// ended up with no speed control at all -- it was left out of a list that
+    /// then also doubled as the test for whether to show the slider.
+    pub fn animated(self) -> bool {
+        !matches!(self, LightbarMode::Steady | LightbarMode::Blue)
+    }
+
+    /// Does this mode build its own colour, ignoring the chosen one?
+    ///
+    /// Separate from [`Self::animated`] on purpose. Rainbow is animated *and*
+    /// builds its own colour, so a colour picker shown for it would suggest a
+    /// setting that does nothing -- while a speed slider withheld from it would
+    /// hide the one control that does. Conflating the two is what put Rainbow in
+    /// the wrong bucket in both directions.
+    pub fn ignores_colour(self) -> bool {
+        matches!(self, LightbarMode::Rainbow | LightbarMode::Blue)
+    }
+
     /// Colour for a given point in the animation.
     pub fn colour_at(self, base: [u8; 3], t: f32) -> [u8; 3] {
         let phase = (t * TAU).rem_euclid(TAU);
@@ -843,6 +865,54 @@ mod tests {
                 _ => assert!(moves, "{} never changes colour", mode.label()),
             }
         }
+    }
+
+    #[test]
+    fn animated_agrees_with_what_colour_at_actually_does() {
+        // `animated` is what decides whether the speed slider appears, and
+        // `colour_at` is what the light does. If they disagree the slider is
+        // either offered for a mode that ignores time or withheld from one
+        // that obeys it -- and the second is invisible in the hand, because a
+        // Rainbow with no speed control still looks like a Rainbow.
+        //
+        // This is the test that would have caught the real bug: Rainbow was
+        // grouped with Blue as "fixed colour", which hid the one control that
+        // matters most on the one mode whose entire character is its speed.
+        for mode in LightbarMode::ALL {
+            let moves = {
+                let samples: Vec<[u8; 3]> = (0..64)
+                    .map(|i| mode.colour_at([10, 180, 250], i as f32 / 64.0))
+                    .collect();
+                samples.windows(2).any(|w| w[0] != w[1])
+            };
+            assert_eq!(
+                mode.animated(),
+                moves,
+                "{}: animated() says {}, but colour_at {}",
+                mode.label(),
+                mode.animated(),
+                if moves { "moves" } else { "holds still" }
+            );
+        }
+    }
+
+    #[test]
+    fn rainbow_ignores_the_chosen_colour_but_not_the_speed() {
+        // The two questions have to stay separate. Rainbow sweeps the whole hue
+        // circle, so the base colour cannot matter -- and it cannot be offered
+        // as though it did. But `rate` scales time, so the sweep's speed is
+        // entirely its own.
+        let a = LightbarMode::Rainbow.colour_at([255, 0, 0], 0.25);
+        let b = LightbarMode::Rainbow.colour_at([0, 0, 255], 0.25);
+        assert_eq!(a, b, "Rainbow must ignore the chosen colour");
+
+        assert!(LightbarMode::Rainbow.animated());
+        assert!(LightbarMode::Rainbow.ignores_colour());
+
+        // Steady is the opposite: it is the chosen colour, held still.
+        assert!(!LightbarMode::Steady.animated());
+        assert!(!LightbarMode::Steady.ignores_colour());
+        assert_eq!(LightbarMode::Steady.colour_at([1, 2, 3], 0.9), [1, 2, 3]);
     }
 
     #[test]

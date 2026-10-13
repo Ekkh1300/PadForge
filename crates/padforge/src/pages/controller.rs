@@ -341,18 +341,24 @@ fn lightbar_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::T
             }
         });
 
-        // Rainbow and Blue have fixed colours, so a picker would mislead.
+        // Rainbow and Blue build their own colour, so a picker would offer a
+        // setting that does nothing. Rainbow is still animated, and its speed
+        // is the whole point of it, which is why these are two questions and
+        // not one: it was treated as fixed-colour and lost its speed slider.
         let mode = ctx.state.editing_profile().lightbar.mode;
-        let fixed_colour = matches!(
-            mode,
-            padcore::profile::LightbarMode::Rainbow | padcore::profile::LightbarMode::Blue
-        );
-        if fixed_colour {
+        if mode.ignores_colour() {
             ui.add_space(SPACE_SM);
+            // Named per mode rather than one sentence for both: "uses its own
+            // colour" is true of Rainbow but leaves the reader thinking the
+            // mode is therefore fixed, when its speed is adjustable below.
             ui.label(
-                RichText::new("This mode uses its own colour.")
-                    .color(TEXT_FAINT)
-                    .size(11.5),
+                RichText::new(if mode == padcore::profile::LightbarMode::Rainbow {
+                    "Rainbow builds its own colours. Its speed is below."
+                } else {
+                    "This mode holds one colour, so there is nothing to pick."
+                })
+                .color(TEXT_FAINT)
+                .size(11.5),
             );
         } else {
             ui.add_space(SPACE_SM);
@@ -380,12 +386,10 @@ fn lightbar_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::T
             push_store(ctx);
         }
 
-        // Every mode that moves gets the speed, which is the honest test for
-        // this rather than a list of the three that were remembered. Rainbow
-        // cycles and Breathe swells, and listing modes by hand is how Rainbow
-        // ended up with a speed that could not be set: the slider was only
-        // offered for a handful of them.
-        if !fixed_colour {
+        // Every mode that moves gets the speed. The question is asked of the mode
+        // rather than answered from a list, because the last list was how Rainbow
+        // ended up with no speed control at all.
+        if mode.animated() {
             let mut rate = ctx.state.editing_profile().lightbar.rate;
             if ui
                 .add(

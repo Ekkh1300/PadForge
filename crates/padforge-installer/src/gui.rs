@@ -46,6 +46,10 @@ struct Layout {
     launch: RECT,
     install: RECT,
     cancel: RECT,
+    /// Reserved for the "Get driver" button. Always laid out, so the other
+    /// buttons do not move when it appears or disappears; only drawn and
+    /// hit-tested when the driver is actually missing.
+    driver: RECT,
     /// Where the status line sits, below the card.
     status: RECT,
 }
@@ -91,6 +95,10 @@ impl Layout {
         let by = h - 62;
         let cancel = rect(w - M - 100, by, 100, button_h);
         let install = rect(w - M - 100 - 12 - 168, by, 168, button_h);
+        // Reserved next to Cancel and only drawn when the driver is missing, so
+        // the space is empty rather than holding a button for something the
+        // user does not need.
+        let driver = rect(w - M - 100 - 12 - 168 - 12 - 168, by, 168, button_h);
 
         // The card ends just below the last option, rather than being stretched
         // to a fixed height. A panel with empty space under its contents reads
@@ -112,13 +120,14 @@ impl Layout {
             launch,
             install,
             cancel,
+            driver,
             status,
         }
     }
 
     /// The region a point falls in, if any.
-    fn hit(&self, x: i32, y: i32) -> Option<Region> {
-        let all = [
+    fn hit(&self, x: i32, y: i32, driver_missing: bool) -> Option<Region> {
+        let mut all = vec![
             (self.folder, Region::Folder),
             (self.browse, Region::Browse),
             (self.desktop, Region::Desktop),
@@ -127,6 +136,12 @@ impl Layout {
             (self.install, Region::Install),
             (self.cancel, Region::Cancel),
         ];
+        // The driver button is only there when the driver is missing, so it is
+        // only clickable then. Hit-testing a reserved-but-undrawn rectangle is
+        // how an invisible button ends up eating a click.
+        if driver_missing {
+            all.push((self.driver, Region::Driver));
+        }
         all.iter()
             .find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
             .map(|(_, region)| *region)
@@ -141,6 +156,10 @@ enum Region {
     Desktop,
     Autostart,
     Launch,
+    /// Opens the ViGEmBus download page. Only drawn when the driver is missing,
+    /// so a warning with nowhere to go is not just bad news -- it is bad news
+    /// with nothing to do about it.
+    Driver,
     Install,
     Cancel,
 }
@@ -179,6 +198,12 @@ struct State {
     launch: bool,
     status: String,
     status_kind: StatusKind,
+    /// Whether the ViGEmBus driver is missing. Probed once, at construction, and
+    /// then held: the answer decides whether a button is drawn and whether that
+    /// button is clickable, and the two must never disagree. Re-probing on each
+    /// mouse move would let a driver installed mid-session leave a live button
+    /// that does nothing.
+    driver_missing: bool,
     phase: Phase,
     hover: Option<Region>,
     pressed: Option<Region>,
@@ -196,14 +221,19 @@ impl State {
         let mut kind = StatusKind::Info;
 
         // Say up front that games will not see the pad without the driver, rather
-        // than leaving the user to work it out after installing. The URL is part
-        // of the sentence: a warning with nowhere to go is just bad news.
-        if !crate::vigem_installed() {
+        // than leaving the user to work it out after installing.
+        //
+        // The URL is on its own line and there is a button for it, because a
+        // warning with nowhere to go is just bad news. Both were missing: the
+        // sentence was the whole of the guidance, and it was long enough that
+        // the link at the end of it was the part most likely to be clipped.
+        let driver_missing = !crate::vigem_installed();
+        if driver_missing {
             status = format!(
-                "Note: games will not see the pad until the ViGEmBus driver is installed. \
-                 {app} installs and runs without it. Get the driver from {url}",
+                "Games will not see your controller until the ViGEmBus driver is \
+                 installed. {app} runs without it, but nothing reaches a game. \
+                 Press \"Get driver\" to open the download page.",
                 app = crate::APP_NAME,
-                url = crate::VIGEM_URL,
             );
             kind = StatusKind::Warn;
         }
@@ -215,6 +245,7 @@ impl State {
             launch: true,
             status,
             status_kind: kind,
+            driver_missing,
             phase: Phase::Choose,
             hover: None,
             pressed: None,
@@ -514,7 +545,7 @@ fn hit_at(hwnd: HWND_T, s: &State, lparam: LPARAM) -> Option<Region> {
     }
     let (x, y) = point_of(lparam);
     let (w, h) = client_size(hwnd);
-    Layout::new(w, h).hit(x, y)
+    Layout::new(w, h).hit(x, y, s.driver_missing)
 }
 
 fn on_move(hwnd: HWND_T, s: &mut State, lparam: LPARAM) {
@@ -587,6 +618,14 @@ fn activate(hwnd: HWND_T, s: &mut State, region: Region) {
             EXIT.store(0, Ordering::SeqCst);
             // SAFETY: standard destruction.
             unsafe { DestroyWindow(hwnd) };
+        }
+        Region::Driver => {
+            // Through the shell rather than a CreateProcess on the URL, so the
+            // user's default browser opens it and the installer does not become
+            // a second copy of the installer window in the taskbar.
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "", crate::VIGEM_URL])
+                .spawn();
         }
         Region::Install => do_install(hwnd, s),
     }
@@ -769,6 +808,19 @@ fn repaint(hwnd: HWND_T, s: &State) {
         ButtonStyle::primary(),
         Region::Install,
     );
+    // Only when the driver is missing. Drawing it unconditionally would put a
+    // button on screen for something the user does not need, and a button
+    // labelled "Get driver" next to an installed driver reads as though the
+    // installer thought it was not.
+    if s.driver_missing {
+        draw_button(
+            &ui,
+            &l.driver,
+            "Get driver",
+            ButtonStyle::neutral(),
+            Region::Driver,
+        );
+    }
     draw_button(
         &ui,
         &l.cancel,

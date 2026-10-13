@@ -127,9 +127,13 @@ impl PadPreview {
             Pos2::new(body_rect.max.x - grip_r * 0.85, grip_cy),
         ];
 
-        // Lightbar glow first, so it sits behind the body.
+        // Lightbar glow first, so it sits behind the body. Wider and stronger
+        // than the strip itself, because that spill onto the shell is the whole
+        // reason a lightbar reads as a lightbar rather than as a coloured line.
         let bar_center = Pos2::new(cx, body_rect.min.y);
-        glow(&painter, bar_center, h * 0.26, self.lightbar);
+        glow(&painter, bar_center, h * 0.30, self.lightbar);
+        // A second, tighter bloom on the strip itself.
+        glow(&painter, bar_center, h * 0.10, self.lightbar);
 
         // --- body ------------------------------------------------------
         //
@@ -141,28 +145,102 @@ impl PadPreview {
         // The fill is darker than the card and the line brighter than both: at
         // the same fill the body was the same colour as the card it sat on, so
         // the outline was all there was of it.
+        //
+        // A single traced outline was tried and is the wrong call here. The
+        // DualShock's silhouette is not convex -- the notch between the grips
+        // turns the bottom into a W -- and egui's only path fill is a convex
+        // one, so a traced outline closes over the notch and the grips
+        // disappear into it. A rectangle with two lobes keeps the shape
+        // readable, and the lobes are what make it a controller at all.
         for grip in grips {
-            painter.circle_stroke(grip, grip_r, Stroke::new(1.5, TEXT_FAINT));
+            painter.circle_stroke(grip, grip_r, Stroke::new(1.5, SHELL_EDGE));
         }
         painter.rect_stroke(
             body_rect,
             RADIUS_LG,
-            Stroke::new(1.5, TEXT_FAINT),
+            Stroke::new(1.5, SHELL_EDGE),
             egui::StrokeKind::Middle,
         );
+        // A soft drop shadow under the whole silhouette. Without it the pad is
+        // a flat outline sitting on a flat card, which is what made it read as
+        // a diagram rather than as an object.
         for grip in grips {
-            painter.circle_filled(grip, grip_r, SURFACE);
+            painter.circle_filled(
+                grip + Vec2::new(0.0, 3.0 * scale),
+                grip_r,
+                Color32::from_black_alpha(95),
+            );
         }
-        painter.rect_filled(body_rect, RADIUS_LG, SURFACE);
+        painter.rect_filled(
+            body_rect.translate(Vec2::new(0.0, 3.0 * scale)),
+            RADIUS_LG,
+            Color32::from_black_alpha(95),
+        );
+        for grip in grips {
+            painter.circle_filled(grip, grip_r, SHELL);
+        }
+        painter.rect_filled(body_rect, RADIUS_LG, SHELL);
 
+        // A vertical gradient across the shell, in a few bands.
+        //
+        // A flat fill is what made the preview read as a diagram. The bands are
+        // coarse on purpose: at this size the steps are invisible and the
+        // overall darkening towards the grips is what the eye reads as a curved
+        // surface catching light from above. Eight is more than enough and
+        // costs eight rectangles rather than a shader.
+        const BANDS: usize = 8;
+        for band in 0..BANDS {
+            let k = (band + 1) as f32 / BANDS as f32;
+            let top = body_rect.min.y + body_rect.height() * band as f32 / BANDS as f32;
+            let band_rect = Rect::from_min_max(
+                Pos2::new(body_rect.min.x, top),
+                Pos2::new(
+                    body_rect.max.x,
+                    top + body_rect.height() / BANDS as f32 + 1.0,
+                ),
+            );
+            // Each band keeps the body's own corner radius, and bands past the
+            // bottom are skipped, so the gradient does not square off the
+            // corners the fill gave it.
+            if band_rect.min.y >= body_rect.max.y {
+                break;
+            }
+            painter.rect_filled(band_rect, RADIUS_LG, SHELL.lerp_to_gamma(SHELL_SHADE, k));
+        }
+        // The gradient is square-cornered, so the rounded outline goes back on
+        // top of it.
+        painter.rect_stroke(
+            body_rect,
+            RADIUS_LG,
+            Stroke::new(1.5, SHELL_EDGE),
+            egui::StrokeKind::Middle,
+        );
+
+        // A highlight along the top edge: the one hard cue that the surface
+        // curves away from the light rather than merely being darker below.
+        let hi = Rect::from_min_max(
+            Pos2::new(body_rect.min.x + body_w * 0.06, body_rect.min.y + 1.5),
+            Pos2::new(body_rect.max.x - body_w * 0.06, body_rect.min.y + 3.0),
+        );
+        painter.rect_filled(hi, RADIUS_PILL, Color32::from_white_alpha(28));
         // --- lightbar --------------------------------------------------
+        // The strip itself, plus a blurred halo drawn underneath it, so the
+        // colour appears to come from inside the shell rather than being
+        // painted on top of it.
         let bar_w = body_w * 0.26;
         let bar_h = (4.0 * scale).max(3.0);
         let bar_rect = Rect::from_min_max(
             Pos2::new(cx - bar_w / 2.0, bar_center.y - bar_h),
             Pos2::new(cx + bar_w / 2.0, bar_center.y + bar_h * 0.5),
         );
+        glow(&painter, bar_rect.center(), bar_w * 0.9, self.lightbar);
         painter.rect_filled(bar_rect, RADIUS_PILL, self.lightbar);
+        // Specular line along the top of the strip, as it has in life.
+        let spec = Rect::from_min_max(
+            Pos2::new(bar_rect.min.x + bar_w * 0.1, bar_rect.min.y),
+            Pos2::new(bar_rect.max.x - bar_w * 0.1, bar_rect.min.y + 1.0),
+        );
+        painter.rect_filled(spec, RADIUS_PILL, Color32::from_white_alpha(70));
 
         let r = &self.report;
         let b = r.buttons;
@@ -971,7 +1049,17 @@ pub fn response_curve(
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     let painter = ui.painter_at(rect);
+    // The plot sits in its own recessed panel with a hairline, so it reads as a
+    // graph area rather than as a hole cut in the card. Without the border the
+    // axes float in the middle of nothing and the eye has nothing to measure
+    // them against.
     painter.rect_filled(rect, RADIUS_SM, BACKDROP);
+    painter.rect_stroke(
+        rect,
+        RADIUS_SM,
+        Stroke::new(1.0, BORDER),
+        egui::StrokeKind::Inside,
+    );
 
     const PAD: f32 = 10.0;
     let plot = Rect::from_min_max(
@@ -987,6 +1075,15 @@ pub fn response_curve(
             plot.center().y - y * plot.height() * 0.5,
         )
     };
+
+    // The dead zone as a filled band, not just a flat stretch of curve. A flat
+    // slope is ambiguous -- it could be a dead zone or a very gentle curve --
+    // whereas a shaded region says outright that nothing happens in here.
+    let dz = settings.deadzone.clamp(0.0, 1.0);
+    if dz > 0.001 {
+        let band = Rect::from_min_max(at(-dz, 0.0), at(dz, 0.0));
+        painter.rect_filled(band, 0.0, ACCENT_FAINT.gamma_multiply(0.7));
+    }
 
     // The identity line, so a reshaped curve has something to be measured
     // against: above it the axis is quicker off centre, below it slower.
@@ -1007,9 +1104,24 @@ pub fn response_curve(
         let y = filter.apply_with_formula(x, formula.as_ref(), &Inputs::default());
         points.push(at(x, y.clamp(-1.0, 1.0)));
     }
+    // Fill between the curve and the centre line first, so the curve itself is
+    // drawn over it rather than the fill hiding it. A curve with the area under
+    // it shaded is a shape; the same curve as a bare line is a scribble, and
+    // the shaded part is what shows at a glance how much travel is being thrown
+    // away to the dead zone.
+    if points.len() > 1 {
+        let mut area = points.clone();
+        area.push(at(points[points.len() - 1].x, 0.0));
+        area.push(at(points[0].x, 0.0));
+        painter.add(egui::Shape::convex_polygon(
+            area,
+            ACCENT.gamma_multiply(0.10),
+            Stroke::NONE,
+        ));
+    }
     painter.add(egui::Shape::line(
         points,
-        egui::epaint::PathStroke::new(2.0, ACCENT),
+        egui::epaint::PathStroke::new(2.5, ACCENT),
     ));
 
     // Where the pad actually is right now, so the trace and the live reading can
@@ -1040,25 +1152,55 @@ pub fn steering_wheel(ui: &mut egui::Ui, angle: f32, size: f32) {
     let at = |x: f32, y: f32| Pos2::new(c.x + x * cos - y * sin, c.y + x * sin + y * cos);
 
     glow(&painter, c, r * 1.6, ACCENT);
-    painter.circle_filled(c, r, BACKDROP);
-    painter.circle_stroke(c, r, Stroke::new(2.5, ACCENT.gamma_multiply(0.7)));
 
     // The rim is a bar rather than a ring: a ring looks the same whichever way
     // it is turned, which is the one thing this has to show.
-    painter.line_segment([at(-r, 0.0), at(r, 0.0)], Stroke::new(5.0, TEXT_MUTED));
+    //
+    // Drawn as a stack of three strokes rather than one. A single flat stroke
+    // is a line, and a line is not an object. The dark underlay and the lit
+    // upper edge are what make it read as a rim with a round section catching
+    // light from above -- the same cue as the controller shell's gradient.
+    painter.line_segment([at(-r, 0.0), at(r, 0.0)], Stroke::new(12.0, SHELL_SHADE));
+    painter.line_segment([at(-r, 0.0), at(r, 0.0)], Stroke::new(8.5, SHELL));
     painter.line_segment(
-        [at(-r * 0.62, 0.0), at(-r * 0.2, r * 0.55)],
-        Stroke::new(2.5, TEXT_FAINT),
+        [at(-r * 0.94, -2.0), at(r * 0.94, -2.0)],
+        Stroke::new(2.0, SHELL_EDGE),
     );
-    painter.line_segment(
-        [at(r * 0.62, 0.0), at(r * 0.2, r * 0.55)],
-        Stroke::new(2.5, TEXT_FAINT),
-    );
-    painter.circle_filled(c, r * 0.22, SURFACE_HOVER);
-    painter.circle_stroke(c, r * 0.22, Stroke::new(1.5, ACCENT));
+
+    // Grip pads where the hands go, in accent so the rim reads as a wheel at
+    // a glance rather than as a plain line.
+    for sign in [-1.0f32, 1.0] {
+        painter.line_segment(
+            [at(sign * r * 0.68, -3.0), at(sign * r * 0.99, -3.0)],
+            Stroke::new(6.0, ACCENT.gamma_multiply(0.6)),
+        );
+    }
+
+    // Spokes: a dark underlay and a lit edge, like the rim, so the whole wheel
+    // is built from one rule rather than each part having its own.
+    for (from, to) in [
+        ((-r * 0.66, 0.0), (-r * 0.26, r * 0.66)),
+        ((r * 0.66, 0.0), (r * 0.26, r * 0.66)),
+    ] {
+        painter.line_segment(
+            [at(from.0, from.1), at(to.0, to.1)],
+            Stroke::new(5.0, SHELL_SHADE),
+        );
+        painter.line_segment(
+            [at(from.0, from.1), at(to.0, to.1)],
+            Stroke::new(2.5, SHELL_EDGE),
+        );
+    }
+
+    // Hub, shaded the same way, with an accent pin at its centre.
+    painter.circle_filled(c, r * 0.27, SHELL_SHADE);
+    painter.circle_filled(c, r * 0.23, SHELL);
+    painter.circle_stroke(c, r * 0.23, Stroke::new(1.5, ACCENT.gamma_multiply(0.75)));
+    painter.circle_filled(c, r * 0.07, ACCENT);
 
     // Straight ahead, marked, so centre is a position rather than a guess.
     painter.line_segment([at(0.0, -r), at(0.0, -r + 7.0)], Stroke::new(3.0, ACCENT));
+    painter.circle_filled(at(0.0, -r + 3.0), 2.5, ACCENT);
 }
 
 /// A preset chip: one shape, one click, rounded like the status pills so the

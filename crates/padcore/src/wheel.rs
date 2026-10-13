@@ -836,13 +836,18 @@ fn group_buttons(controls: &[Control], preparsed: isize) -> Vec<ButtonGroup> {
 /// pedal reports on can search for it. Numbering would be tidier and useless.
 fn value_label(page: u16, usage: u16) -> String {
     if page == PAGE_GENERIC_DESKTOP {
+        // Spelled out rather than abbreviated. The page called these "X" and
+        // "Rx", which is HID's shorthand and means nothing to someone choosing
+        // between them in a dropdown: "Rx" is a rotation, not a second X axis,
+        // and a wheel's brake pedal arriving as one rather than the other is
+        // exactly the kind of thing that reads as the binding being wrong.
         let name = match usage {
-            0x30 => "X",
-            0x31 => "Y",
-            0x32 => "Z",
-            0x33 => "Rx",
-            0x34 => "Ry",
-            0x35 => "Rz",
+            0x30 => "X axis",
+            0x31 => "Y axis",
+            0x32 => "Z axis",
+            0x33 => "X rotation",
+            0x34 => "Y rotation",
+            0x35 => "Z rotation",
             0x36 => "Slider",
             0x37 => "Dial",
             0x38 => "Wheel",
@@ -1228,13 +1233,38 @@ mod tests {
     fn the_picker_shows_what_to_move_next_to_what_it_is_called() {
         // A player reading the picker knows their wheel as "the G29" and their
         // pedals as "the axis called Z". Neither name alone finds the other.
+        //
+        // Spelled out, and this is the test that says so. HID calls them X, Y, Z
+        // and Rx, Ry, Rz, which is shorthand for something else: the R group is
+        // a rotation, not a second set of axes. A wheel whose brake arrives as
+        // X rotation rather than a second X is the normal case, and "Rx" in a
+        // dropdown gives nobody the way to tell the two apart.
         assert_eq!(value_label(PAGE_GENERIC_DESKTOP, 0x38), "Wheel");
-        assert_eq!(value_label(PAGE_GENERIC_DESKTOP, 0x35), "Rz");
-        assert_eq!(value_label(PAGE_GENERIC_DESKTOP, 0x33), "Rx");
+        assert_eq!(value_label(PAGE_GENERIC_DESKTOP, 0x30), "X axis");
+        assert_eq!(value_label(PAGE_GENERIC_DESKTOP, 0x31), "Y axis");
+        assert_eq!(value_label(PAGE_GENERIC_DESKTOP, 0x32), "Z axis");
+        assert_eq!(value_label(PAGE_GENERIC_DESKTOP, 0x33), "X rotation");
+        assert_eq!(value_label(PAGE_GENERIC_DESKTOP, 0x34), "Y rotation");
+        assert_eq!(value_label(PAGE_GENERIC_DESKTOP, 0x35), "Z rotation");
         assert_eq!(button_label(PAGE_BUTTON, 4), "button 4");
         // An unknown usage is named by what it is rather than dropped, because
         // a control nobody can find in the list cannot be bound.
         assert_eq!(value_label(PAGE_GENERIC_DESKTOP, 0x99), "axis 0x99");
+    }
+
+    #[test]
+    fn an_axis_and_a_rotation_of_the_same_letter_are_never_the_same_name() {
+        // The whole reason for spelling these out. If "X axis" and "X rotation"
+        // ever collapse to the same label, binding by name becomes a guess, and
+        // the failure is silent: the wheel simply does the wrong thing.
+        let names: Vec<String> = [0x30, 0x31, 0x32, 0x33, 0x34, 0x35]
+            .iter()
+            .map(|u| value_label(PAGE_GENERIC_DESKTOP, *u))
+            .collect();
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "duplicate names: {names:?}");
     }
 
     // -- serialisation --------------------------------------------------------

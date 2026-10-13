@@ -70,6 +70,22 @@ pub const TRACK: Color32 = Color32::from_rgb(0x0E, 0x11, 0x17);
 /// The drag handle on a slider.
 pub const HANDLE: Color32 = Color32::from_rgb(0xE6, 0xEA, 0xF2);
 
+/// The controller shell, in the drawn preview.
+///
+/// Not `SURFACE`: the preview sits on a card of that colour, and a shell of the
+/// same colour is a shape you can only see the edge of. Lifted just far enough
+/// to separate, and `SHELL_EDGE` supplies the outline.
+///
+/// The three are ordered dark to light so the shell can be shaded top to
+/// bottom without a shader: `SHELL` at the top of the body, `SHELL_SHADE` at
+/// the bottom, with the grips picking up whichever end they sit nearest.
+pub const SHELL: Color32 = Color32::from_rgb(0x2A, 0x30, 0x3C);
+/// The shell's lower half, where it turns away from the light.
+pub const SHELL_SHADE: Color32 = Color32::from_rgb(0x16, 0x1A, 0x22);
+/// The shell's outline. Brighter than both fills, because an edge is what the
+/// eye reads first and a dark edge on a dark body is not an edge.
+pub const SHELL_EDGE: Color32 = Color32::from_rgb(0x4A, 0x53, 0x63);
+
 /// Corner radii, so rounding is consistent across the app.
 pub const RADIUS_SM: CornerRadius = CornerRadius::same(6);
 pub const RADIUS_MD: CornerRadius = CornerRadius::same(10);
