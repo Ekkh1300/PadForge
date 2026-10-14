@@ -62,9 +62,23 @@ pub enum LightbarMode {
     Blue,
     /// Fade out to off, for showing that output is paused.
     PulseFade,
+    /// The light is off.
+    ///
+    /// Not the same as a black Steady: a real pad's lightbar draws no current at
+    /// all when dark, and on a pad whose shell is light-coloured the difference
+    /// between "off" and "black" is visible across a room. It is also the mode
+    /// to reach for when the colour itself is the problem -- some players find
+    /// any light bar distracting and want it dark without losing the rest of the
+    /// profile.
+    Off,
 }
 
 impl LightbarMode {
+    /// Every mode, in the order the picker and the cycle hotkey walk them.
+    ///
+    /// `Off` is last deliberately. The hotkey advances to the next entry, so
+    /// putting it at the end means adding it did not move anything a saved
+    /// profile or a muscle memory already refers to.
     pub const ALL: &'static [LightbarMode] = &[
         LightbarMode::Steady,
         LightbarMode::Breathe,
@@ -72,6 +86,7 @@ impl LightbarMode {
         LightbarMode::Rainbow,
         LightbarMode::Blue,
         LightbarMode::PulseFade,
+        LightbarMode::Off,
     ];
 
     pub fn label(self) -> &'static str {
@@ -82,6 +97,7 @@ impl LightbarMode {
             LightbarMode::Rainbow => "Rainbow",
             LightbarMode::Blue => "Blue",
             LightbarMode::PulseFade => "Pulse fade",
+            LightbarMode::Off => "Off",
         }
     }
 
@@ -93,7 +109,10 @@ impl LightbarMode {
     /// ended up with no speed control at all -- it was left out of a list that
     /// then also doubled as the test for whether to show the slider.
     pub fn animated(self) -> bool {
-        !matches!(self, LightbarMode::Steady | LightbarMode::Blue)
+        !matches!(
+            self,
+            LightbarMode::Steady | LightbarMode::Blue | LightbarMode::Off
+        )
     }
 
     /// Does this mode build its own colour, ignoring the chosen one?
@@ -104,7 +123,21 @@ impl LightbarMode {
     /// hide the one control that does. Conflating the two is what put Rainbow in
     /// the wrong bucket in both directions.
     pub fn ignores_colour(self) -> bool {
-        matches!(self, LightbarMode::Rainbow | LightbarMode::Blue)
+        matches!(
+            self,
+            LightbarMode::Rainbow | LightbarMode::Blue | LightbarMode::Off
+        )
+    }
+
+    /// Is the light actually on in this mode?
+    ///
+    /// Not the same question as [`Self::ignores_colour`]. Blue ignores the
+    /// chosen colour because it has one of its own; Off ignores it because there
+    /// is no light to colour. The UI needs both: the picker is hidden by the
+    /// second, and the brightness slider and the live swatch are pointless
+    /// wherever this is false.
+    pub fn lights_up(self) -> bool {
+        self != LightbarMode::Off
     }
 
     /// Colour for a given point in the animation.
@@ -112,6 +145,11 @@ impl LightbarMode {
         let phase = (t * TAU).rem_euclid(TAU);
         let lerp = |a: u8, b: u8, k: f32| (a as f32 + (b as f32 - a as f32) * k).round() as u8;
         match self {
+            // Dark, and dark for a reason rather than by accident. Matching on
+            // `lights_up` first would read better, but the exhaustive arms below
+            // are what keep a mode added later from silently compiling into
+            // this one.
+            LightbarMode::Off => [0, 0, 0],
             LightbarMode::Steady | LightbarMode::Blue => {
                 if self == LightbarMode::Blue {
                     [0x00, 0x70, 0xC8]
@@ -855,8 +893,8 @@ mod tests {
                 .collect();
             let moves = samples.windows(2).any(|w| w[0] != w[1]);
             match mode {
-                // These two are solid by definition.
-                LightbarMode::Steady | LightbarMode::Blue => {
+                // These are dark or held by definition.
+                LightbarMode::Steady | LightbarMode::Blue | LightbarMode::Off => {
                     assert!(!moves, "{} must not change colour", mode.label());
                 }
                 // An animation that never changes colour is indistinguishable
@@ -865,6 +903,79 @@ mod tests {
                 _ => assert!(moves, "{} never changes colour", mode.label()),
             }
         }
+    }
+
+    #[test]
+    fn off_is_dark_whatever_the_colour_and_the_speed() {
+        // The whole point of the mode: a profile with a red lightbar should go
+        // dark on the pad, not go dark-red. Every input is varied because a
+        // mode that quietly ignored one of them would still look right in a
+        // screenshot taken with the others at their defaults.
+        for base in [[255, 0, 0], [0, 0, 255], [10, 180, 250], [0, 0, 0]] {
+            for t in [0.0, 0.13, 0.5, 0.77, 0.99] {
+                assert_eq!(
+                    LightbarMode::Off.colour_at(base, t),
+                    [0, 0, 0],
+                    "Off lit up with {base:?} at t={t}"
+                );
+            }
+        }
+
+        // And it answers no to every question the UI asks about it, so no
+        // control is offered for a light that is not on.
+        assert!(!LightbarMode::Off.animated(), "speed would do nothing");
+        assert!(
+            LightbarMode::Off.ignores_colour(),
+            "there is no colour to pick"
+        );
+        assert!(!LightbarMode::Off.lights_up());
+    }
+
+    #[test]
+    fn lights_up_agrees_with_whether_the_colour_is_black() {
+        // A mode that reports itself as lit while drawing black is a mode the UI
+        // will offer a brightness slider for that does nothing, and the slider's
+        // own value becomes a lie.
+        for mode in LightbarMode::ALL {
+            let drawn = mode.colour_at([255, 255, 255], 0.3);
+            let black = drawn == [0, 0, 0];
+            assert_eq!(
+                mode.lights_up(),
+                !black,
+                "{}: lights_up says {}, but it draws {drawn:?}",
+                mode.label(),
+                mode.lights_up()
+            );
+        }
+    }
+
+    #[test]
+    fn off_is_last_so_adding_it_moved_nothing() {
+        // The cycle hotkey advances through ALL, so an insertion in the middle
+        // silently re-points a saved profile and anyone's muscle memory. This
+        // asserts the position rather than trusting a comment.
+        assert_eq!(LightbarMode::ALL.last(), Some(&LightbarMode::Off));
+        assert_eq!(LightbarMode::ALL.first(), Some(&LightbarMode::Steady));
+        assert_eq!(
+            LightbarMode::ALL.len(),
+            7,
+            "a new mode was added: check that its tests were written too"
+        );
+    }
+
+    #[test]
+    fn an_off_profile_survives_a_round_trip() {
+        // Serde is how a mode reaches disk, and `off` is the string written
+        // there. A typo in the rename would leave every saved profile refusing
+        // to load rather than failing here.
+        let p = LightbarConfig {
+            mode: LightbarMode::Off,
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&p).expect("serialize");
+        assert!(text.contains("\"off\""), "got {text}");
+        let back: LightbarConfig = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(back.mode, LightbarMode::Off);
     }
 
     #[test]

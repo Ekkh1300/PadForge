@@ -352,16 +352,25 @@ fn lightbar_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::T
             // colour" is true of Rainbow but leaves the reader thinking the
             // mode is therefore fixed, when its speed is adjustable below.
             ui.label(
-                RichText::new(if mode == padcore::profile::LightbarMode::Rainbow {
-                    "Rainbow builds its own colours. Its speed is below."
-                } else {
-                    "This mode holds one colour, so there is nothing to pick."
+                RichText::new(match mode {
+                    padcore::profile::LightbarMode::Rainbow => {
+                        "Rainbow builds its own colours. Its speed is below."
+                    }
+                    // Off has no colour at all, so "there is nothing to pick"
+                    // is true and useless. Saying the light is simply out says
+                    // why none of the other controls are here.
+                    padcore::profile::LightbarMode::Off => {
+                        "The light is off. Everything below it is kept, so \
+                         switching back to another mode restores what you had."
+                    }
+                    _ => "This mode holds one colour, so there is nothing to pick.",
                 })
                 .color(TEXT_FAINT)
                 .size(11.5),
             );
+            ui.add_space(SPACE_XS);
         } else {
-            ui.add_space(SPACE_SM);
+            ui.add_space(SPACE_MD);
             let mut picker = ColourPicker::new(ctx.state.editing_profile().lightbar.color);
             picker.show(ui);
             let rgb = picker.rgb();
@@ -371,25 +380,31 @@ fn lightbar_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::T
             }
         }
 
-        ui.add_space(SPACE_MD);
-        let mut brightness = ctx.state.editing_profile().lightbar.brightness;
-        if ui
-            .add(
-                egui::Slider::new(&mut brightness, 0.05..=1.0)
-                    .text("brightness")
-                    .suffix("%")
-                    .show_value(true),
-            )
-            .changed()
-        {
-            ctx.state.editing_profile_mut().lightbar.brightness = brightness;
-            push_store(ctx);
+        // Brightness and speed only exist for a light that is on. A brightness
+        // slider over a dark lightbar is a control whose value is a lie, and
+        // the two of them are the only settings Off has no use for.
+        if mode.lights_up() {
+            ui.add_space(SPACE_MD);
+            let mut brightness = ctx.state.editing_profile().lightbar.brightness;
+            if ui
+                .add(
+                    egui::Slider::new(&mut brightness, 0.05..=1.0)
+                        .text("brightness")
+                        .suffix("%")
+                        .show_value(true),
+                )
+                .changed()
+            {
+                ctx.state.editing_profile_mut().lightbar.brightness = brightness;
+                push_store(ctx);
+            }
         }
 
         // Every mode that moves gets the speed. The question is asked of the mode
         // rather than answered from a list, because the last list was how Rainbow
         // ended up with no speed control at all.
         if mode.animated() {
+            ui.add_space(SPACE_MD);
             let mut rate = ctx.state.editing_profile().lightbar.rate;
             if ui
                 .add(
@@ -410,13 +425,20 @@ fn lightbar_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::T
         let live = egui::Color32::from_rgb(t.lightbar[0], t.lightbar[1], t.lightbar[2]);
         ui.horizontal(|ui| {
             ui.label(RichText::new("live").color(TEXT_MUTED).size(11.0));
-            egui::Frame::new()
+            // A swatch of pure black on a dark card is invisible, which would
+            // leave "off" looking like a frame that failed to draw. A hairline
+            // border gives the dark swatch an edge to be seen against.
+            let swatch = egui::Frame::new()
                 .fill(live)
+                .stroke(Stroke::new(1.0, BORDER))
                 .corner_radius(RADIUS_SM)
-                .inner_margin(MarginF32::same(4.0))
-                .show(ui, |ui| {
-                    ui.label(RichText::new(" ").size(10.0));
-                });
+                .inner_margin(MarginF32::same(4.0));
+            swatch.show(ui, |ui| {
+                ui.label(RichText::new(" ").size(10.0));
+            });
+            if !mode.lights_up() {
+                ui.label(RichText::new("dark").color(TEXT_FAINT).size(11.0));
+            }
         });
     });
 }
