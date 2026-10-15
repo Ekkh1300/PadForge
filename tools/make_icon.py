@@ -277,6 +277,34 @@ def verify(data, expected):
     return problems
 
 
+def write_png(img, path):
+    """Write a canvas as an RGBA PNG.
+
+    Hand-built rather than pulled from a library, for the same reason the .ico is:
+    this file runs in CI and has to keep working with the standard library alone.
+    """
+    raw = bytearray()
+    for y in range(img.h):
+        raw.append(0)  # filter type 0 (None) for this scanline
+        row = y * img.w * 4
+        raw += img.px[row : row + img.w * 4]
+
+    def chunk(tag, payload):
+        out = struct.pack(">I", len(payload)) + tag + payload
+        return out + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", img.w, img.h, 8, 6, 0, 0, 0)  # 8-bit RGBA
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+        + chunk(b"IEND", b"")
+    )
+    with open(path, "wb") as fh:
+        fh.write(png)
+    return len(png)
+
+
 def main():
     frames = [draw_mark(s) for s in SIZES]
     data = build_ico(frames)
@@ -291,6 +319,26 @@ def main():
     with open(OUT, "wb") as fh:
         fh.write(data)
     print("  verified: directory, offsets and sizes all consistent")
+
+    # The PNGs come from the same mark and the same code, so a README picture and
+    # a title-bar icon cannot drift into looking like two different programs.
+    # `icon.png` was the one that did: it was a controller drawing, while every
+    # other surface showed the rings.
+    repo = os.path.dirname(HERE)
+    for name, size in (
+        ("icon.png", 128),
+        (os.path.join("docs", "icon-128.png"), 128),
+        (os.path.join("docs", "icon-512.png"), 512),
+    ):
+        target = os.path.join(repo, name)
+        if not os.path.isdir(os.path.dirname(target)):
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+        size_written = write_png(draw_mark(size), target)
+        print(f"wrote {name} ({size}px, {size_written} bytes)")
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":

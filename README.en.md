@@ -24,9 +24,9 @@ off.
 |---|---|
 | <img src="docs/ui-dashboard.png" alt="Dashboard" width="420"> | <img src="docs/ui-test.png" alt="Test page" width="420"> |
 
-| Output — what games see, and the pad's shape | Racing — wheel and pedals |
+| Output — what games see, and the pad's shape | Analog pedals — wheel and pedals |
 |---|---|
-| <img src="docs/ui-output.png" alt="Output page" width="420"> | <img src="docs/ui-racing.png" alt="Racing page" width="420"> |
+| <img src="docs/ui-output.png" alt="Output page" width="420"> | <img src="docs/ui-racing.png" alt="Analog pedals page" width="420"> |
 
 | Controller — sticks, triggers, lightbar | Settings |
 |---|---|
@@ -53,7 +53,11 @@ off.
 - **Profiles.** Per-game bundles of every setting above, switchable manually, by
   hotkey, or automatically when a matching program comes to the foreground.
   Import and export as JSON.
-- **Lightbar.** Colour, brightness, and animation (steady, breathe, flash,
+- **Lightbar.** Colour, brightness, and animation — steady, breathe,
+  flash, **rainbow**, blue, pulse fade, and **off** — written back to
+  the pad. The speed is adjustable for **every animated mode**, rainbow
+  included. `Off` keeps your colour and brightness underneath, so
+  switching back restores what you had.
   **rainbow**, blue, pulse-fade), written back to the pad. The speed is
   adjustable for **every animated mode**, rainbow included.
 - **Pick the output shape.** Whichever pad you plug in, Windows can see it as an
@@ -66,14 +70,16 @@ off.
 - **Virtual slot.** Publish as Player 1 to Player 4, or let the system choose.
   The driver picks the slot, so when the requested one is taken the app says
   honestly where the pad ended up rather than claiming the request took.
-- **Racing.** Draws the steering axis as a real wheel and turns it live from the
+- **Analog pedals.** Draws the steering axis as a real wheel and turns it live from the
   pad or from a wheel, and samples the response curve on the actual motor filter
   rather than on a hand-written approximation — so if the map and the motor ever
   disagree, the map is to blame. Three presets, **Sim**, **Arcade** and **Drift**,
   each one a coherent shape across the wheel and both pedals.
 - **Real wheels.** Any HID device that calls itself a joystick is read, with no
   table of supported models in the code. Every target is learned by moving that
-  control, and each has its own deadzone and sensitivity.
+  control, and each has its own deadzone and sensitivity. Controls are
+  listed by what they are — *X axis*, *Z axis*, *X rotation* — because
+  "Rx" in a dropdown tells you nothing.
 - **Test page.** A pad can be assumed healthy and be wrong. Operate each control
   once and its row turns green and stays green — a switch that worked once works
   every time, and the one that did not is what you came to find. 20 parts, from
@@ -194,7 +200,7 @@ loss.
 
 ## Status
 
-Complete and tested: **224 tests pass**, `cargo fmt` and `cargo clippy` are clean
+Complete and tested: **234 tests pass**, `cargo fmt` and `cargo clippy` are clean
 under `-D warnings`, and rustdoc builds without warnings. CI runs all of it on
 every push.
 
