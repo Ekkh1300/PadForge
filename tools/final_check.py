@@ -36,9 +36,16 @@ def run(*args, cwd=ROOT):
 
 
 print("the release")
-rel = gh("release", "view", "v1.0.0", "--repo", REPO, "--json", "name,isDraft,url,assets,body")
+# The tag is not pinned. It was v1.0.0 through the first release and had to be
+# edited by hand each time after, which is the kind of thing that silently stops
+# checking the thing you think it is checking. Read it from the workspace
+# version instead: that is the release being built, by construction.
+cargo_toml = open(os.path.join(ROOT, "Cargo.toml"), encoding="utf-8").read()
+VERSION = cargo_toml.split('version = "')[1].split('"')[0]
+TAG = f"v{VERSION}"
+rel = gh("release", "view", TAG, "--repo", REPO, "--json", "name,isDraft,url,assets,body")
 if rel is None:
-    check("release v1.0.0 exists", False)
+    check(f"release {TAG} exists", False)
 else:
     d = json.loads(rel)
     check("release is published", not d["isDraft"], d["url"])
@@ -47,7 +54,11 @@ else:
         ("release notes show the icon", "icon-512.png"),
         ("release notes show the installer", "installer.png"),
         ("release notes link the driver", "ViGEmBus"),
-        ("release notes are Persian", "بازی‌های ویندوز"),
+        # The notes are English as asked, so this checks for the English fact
+        # rather than a Persian sentence. It used to look for Persian text and
+        # would have kept passing on the old tag while saying nothing about the
+        # release in front of it.
+        ("release notes are English", "Windows games speak XInput"),
     ):
         check(name, needle in body)
 
