@@ -87,6 +87,29 @@ off.
   Share and Options, the touchpad and the motion sensors.
 - **Calibration.** Learns each pad's resting stick position automatically, so a
   worn stick still reads centred.
+- **Diagnostics.** The raw HID bytes of the last report next to every field they
+  were read as, with the offset each came from in its own column, and a freeze
+  button because a live buffer changes at 755 Hz. Every decoding mistake looks
+  exactly like this page: the bytes are right and the field is read from the
+  wrong place, and nothing anywhere disagrees.
+- **Check an installation without starting it.** `padforge.exe --check` prints a
+  checklist with a verdict, writes nothing, and exits non-zero if something is
+  wrong. `--json` for a script. Useful on somebody else's machine, which is most
+  of the time.
+- **Degrades instead of failing.** If the virtual gamepad driver is missing,
+  PadForge says so, names ViGEmBus and where to get it, and carries on as a
+  monitor: the pad is still read, every control still works, the values are
+  still visible.
+- **A bug report in one button.** Settings then Report a bug collects the log,
+  your settings and your profiles into one file in Downloads, with the device
+  serial removed. A crash writes its own dump before the process disappears,
+  because the default handler's message goes to a debugger nobody has attached
+  to.
+- **Your settings survive an upgrade.** Every file declares a schema version and
+  is migrated forward. A file from a *newer* build is read but never written
+  back, so running an old version cannot delete what it does not understand; a
+  file that will not parse is copied aside before anything overwrites it; and
+  one damaged profile does not cost you the others.
 - **Stays out of the way.** Notification-area icon, close-to-tray, pause toggle,
   global hotkeys with an in-app capture UI, and per-user autostart.
 
@@ -126,6 +149,23 @@ Options: `--no-desktop-shortcut`, `--autostart`, `--no-launch`.
 The installer is drawn with native Win32 and GDI rather than a GPU renderer: it
 has no dependencies beyond `windows-sys`, and it works even on a machine whose
 graphics driver is unhappy.
+
+## Command line
+
+```
+padforge.exe                  open the window
+padforge.exe --tray           start in the notification area, no window
+padforge.exe --profile Name   start on that profile instead of the last one
+padforge.exe --check          check the installation and exit; writes nothing
+padforge.exe --check --json   the same, machine-readable
+padforge.exe --help
+```
+
+`--check` opens no window, starts no engine and writes no files, which is what
+makes it safe to run on somebody else's machine. Every check is reported
+independently rather than stopping at the first failure, and the exit code is
+non-zero only when something actually failed — a missing driver with
+monitor-only chosen is a working installation that does one thing less.
 
 ## Building
 
@@ -200,7 +240,7 @@ loss.
 
 ## Status
 
-Complete and tested: **234 tests pass**, `cargo fmt` and `cargo clippy` are clean
+Complete and tested: **279 tests pass**, `cargo fmt` and `cargo clippy` are clean
 under `-D warnings`, and rustdoc builds without warnings. CI runs all of it on
 every push.
 
@@ -322,6 +362,40 @@ The installer's shell-link vtable is declared by hand, because `windows-sys` doe
 not bind `IShellLink`. A round-trip test guards the layout: writing a shortcut and
 reading it back is what proves the offsets are right, and getting them wrong is a
 hard crash rather than a wrong answer.
+
+## Is it safe to run?
+
+PadForge is **not code-signed**, so Windows SmartScreen will warn the first time
+you run the installer. Click **More info** > **Run anyway**.
+
+A self-signed certificate would not help, and this is worth being precise about:
+SmartScreen treats an untrusted publisher as *worse* than an unsigned one,
+because the signature is present and the name on it means nothing. Clearing the
+warning needs a certificate from a real authority, which costs money every year.
+That is a decision for the maintainer, not something a build can do.
+
+Every release ships a `SHA256SUMS.txt` beside the installer, so you can check
+what you downloaded without trusting us:
+
+```powershell
+Get-FileHash .\PadForge-Setup.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS.txt
+```
+
+Both lines show the same hash. The release job computes it in the same run that
+built the file, so the two cannot drift apart.
+
+No telemetry is collected, and none would be even if it could be.
+
+## Getting help
+
+- Something does not work: press **Report a bug** first, then file an issue.
+  The report carries the log and a summary, so the first reply will not be "can
+  you send your log".
+- How do I...: [Discussions](https://github.com/Ekkh1300/PadForge/discussions).
+- To help: [CONTRIBUTING.md](CONTRIBUTING.md).
+- What is planned, and what deliberately is not:
+  [the roadmap](docs/roadmap.md).
 
 ## Licence
 
