@@ -54,13 +54,18 @@ else:
         ("release notes show the icon", "icon-512.png"),
         ("release notes show the installer", "installer.png"),
         ("release notes link the driver", "ViGEmBus"),
-        # The notes are English as asked, so this checks for the English fact
-        # rather than a Persian sentence. It used to look for Persian text and
-        # would have kept passing on the old tag while saying nothing about the
-        # release in front of it.
-        ("release notes are English", "Windows games speak XInput"),
+        # The property, not a sentence from one particular release. This used to
+        # look for "Windows games speak XInput", which is a line that happened to
+        # be in v1.0.1 -- so every later release failed a check about being in
+        # English. The notes are English as asked, so the invariant worth
+        # checking is that they are not Persian: Arabic-script characters, which
+        # are what a Persian document is made of and an English one has none of.
+        ("release notes are in English", not any("\u0600" <= c <= "\u06ff" for c in body)),
     ):
-        check(name, needle in body)
+        if isinstance(needle, bool):
+            check(name, needle)
+        else:
+            check(name, needle in body)
 
     assets = {a["name"]: a for a in d["assets"]}
     check("setup file is attached", "PadForge-Setup.exe" in assets)
@@ -72,11 +77,52 @@ else:
     for name in ("icon-128.png", "icon-512.png", "icon-sizes.png", "installer.png"):
         check(f"{name} attached", name in assets)
 
-print("\nthe local artefact matches what was published")
+print("\nwhat was published can be verified")
+# This used to compare the size of the locally built installer against the
+# published one, which only meant anything while releases were built by hand on
+# this machine. Now a tag builds them on a runner, and two correct builds of the
+# same source are not the same bytes -- so the check was comparing a stale local
+# artefact against a good remote one, and failing for a reason that said nothing
+# about either.
+#
+# The property worth checking is the one a downloader can rely on: the checksum
+# sitting next to the installer is the checksum of the installer. GitHub computes
+# a digest per asset, and the release job computed the other one from the same
+# file in the same run. If those two agree, somebody who downloads both can prove
+# they match.
+sums_asset = assets.get("SHA256SUMS.txt")
+setup_asset = assets.get("PadForge-Setup.exe")
+if sums_asset and setup_asset:
+    # The REST endpoint, not the GraphQL one `gh release view` uses: the
+    # GraphQL asset `id` is a node id ("RA_kwDO..."), not the number
+    # `/releases/assets/{id}` wants, so the obvious version of this returns
+    # Not Found and then compares the string "Not Found" against a hash.
+    rest = run("gh", "api", f"repos/{REPO}/releases/tags/{TAG}")
+    rest_assets = {}
+    if rest.returncode == 0:
+        rest_assets = {a["name"]: a for a in json.loads(rest.stdout).get("assets", [])}
+
+    sums = run(
+        "gh", "api",
+        f"repos/{REPO}/releases/assets/{rest_assets['SHA256SUMS.txt']['id']}",
+        "-H", "Accept: application/octet-stream",
+    ).stdout.strip()
+    parts = sums.split()
+    published_hash = parts[0] if parts else ""
+    github_hash = (rest_assets["PadForge-Setup.exe"].get("digest") or "").removeprefix("sha256:")
+    check(
+        "the shipped checksum is the checksum of the shipped installer",
+        bool(published_hash) and published_hash == github_hash,
+        published_hash[:16] or sums[:40],
+    )
+    # `<hash>  <name>`, two spaces: one space does not parse for sha256sum -c.
+    check("the checksum file is in sha256sum format", "  " in sums, sums[:60])
+else:
+    check("a checksum ships with the installer", False)
+
 if os.path.isfile(SETUP):
     local = os.path.getsize(SETUP)
-    remote = assets.get("PadForge-Setup.exe", {}).get("size")
-    check("local size equals published size", local == remote, f"{local:,} bytes")
+    print(f"  note: local installer is {local:,} bytes; the release was built on a runner")
 else:
     check("local setup file exists", False)
 
