@@ -140,6 +140,13 @@ pub struct DeviceSnapshot {
     /// Time since the previous report, used to spot a stalled link.
     pub frame_ms: f32,
     pub connected: bool,
+    /// The bytes the last report was decoded from.
+    ///
+    /// Held here rather than in the engine because this is the reader thread's
+    /// data: the engine never sees the buffer, only the decode. Copying 128
+    /// bytes once per report is nothing next to decoding them, and it is what
+    /// lets the diagnostics page show what arrived next to what it was read as.
+    pub raw: Vec<u8>,
 }
 
 impl DeviceSnapshot {
@@ -157,6 +164,7 @@ impl DeviceSnapshot {
             packets: 0,
             frame_ms: 0.0,
             connected: false,
+            raw: Vec::new(),
         }
     }
 }
@@ -610,6 +618,7 @@ fn run(
             packets: 0,
             frame_ms: 0.0,
             connected: true,
+            raw: Vec::new(),
         };
 
         // Discard any output queued while the handle was being opened.
@@ -667,6 +676,12 @@ fn run(
                         s.report = rep;
                         s.packets += 1;
                         s.frame_ms = if s.packets == 1 { 0.0 } else { frame_ms };
+                        // The bytes behind the decode, for the diagnostics page.
+                        // Clamped to what the report can actually use: Windows
+                        // pads the read out to the device's declared length, so
+                        // the tail is whatever was in the buffer before.
+                        s.raw.clear();
+                        s.raw.extend_from_slice(&buf[..n.min(64)]);
 
                         // While nothing is pressed and the sticks are centred,
                         // refine the resting centre. Taking the snapshot under

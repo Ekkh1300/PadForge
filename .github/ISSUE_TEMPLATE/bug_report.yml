@@ -1,0 +1,74 @@
+name: Description
+about: Something PadForge does not do, or does wrongly
+title: ""
+labels: bug
+assignees: ""
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Press **Report a bug** on PadForge's Settings page and attach the file it
+        writes. It has the log, your settings and your profiles, with the device
+        serial removed.
+
+        If PadForge is not working at all, run `padforge.exe --check` and paste
+        the output — it answers most first reports in one line.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, and what happened instead. Two sentences is plenty.
+      placeholder: I pressed L2 in the Output page's rumble test and the bar moved, but the pad did not vibrate.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      placeholder: The pad to vibrate.
+    validations:
+      required: true
+
+  - type: textarea
+    id: where
+    attributes:
+      label: Which page?
+      description: Where in PadForge this happens, and whether it happens every time.
+      placeholder: Output page, every time
+    validations:
+      required: true
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: How is the pad connected?
+      options:
+        - Bluetooth
+        - USB
+        - Both
+        - Not connected
+    validations:
+      required: true
+
+  - type: dropdown
+    id: shape
+    attributes:
+      label: Which output shape is selected?
+      description: On the Output page. It matters: rumble behaves differently between the two.
+      options:
+        - Xbox 360
+        - DualShock 4
+        - Monitor only
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: The attached file
+      description: Drag the zip from Report a bug into this box.
+      render: file

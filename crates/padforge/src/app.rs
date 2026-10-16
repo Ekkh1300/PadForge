@@ -287,6 +287,7 @@ impl App {
                             Page::Profiles => pages::profiles::draw(ui, &mut page_ctx),
                             Page::Output => pages::output::draw(ui, &mut page_ctx),
                             Page::Settings => pages::settings::draw(ui, &mut page_ctx),
+                            Page::Diagnostics => pages::diagnostics::draw(ui, &mut page_ctx),
                         }
                     });
             });

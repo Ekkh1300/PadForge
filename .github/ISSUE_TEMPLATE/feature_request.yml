@@ -1,0 +1,36 @@
+name: Feature request
+about: Something PadForge does not do yet
+title: ""
+labels: enhancement
+assignees: ""
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        PadForge is written by one person in the margins of everything else.
+        What makes a request worth building is not how clever it is — it is
+        whether you can say what you were trying to do.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What were you trying to do?
+      description: The situation, not the solution. This is the part that decides whether the request is workable.
+      placeholder: I want the triggers to ramp in over the first 30% of travel instead of jumping from 0 to 10 the moment I touch them.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What are you doing instead?
+      description: Even "nothing" is a useful answer.
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Which pad, which game, whether it needs to work per-profile.

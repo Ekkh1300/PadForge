@@ -20,6 +20,7 @@ pub enum Page {
     Profiles,
     Output,
     Settings,
+    Diagnostics,
 }
 
 impl Page {
@@ -33,6 +34,7 @@ impl Page {
         Page::Profiles,
         Page::Output,
         Page::Settings,
+        Page::Diagnostics,
     ];
 
     pub fn title(self) -> &'static str {
@@ -46,6 +48,7 @@ impl Page {
             Page::Profiles => "Profiles",
             Page::Output => "Output",
             Page::Settings => "Settings",
+            Page::Diagnostics => "Diagnostics",
         }
     }
 
@@ -62,6 +65,7 @@ impl Page {
             Page::Profiles => "07",
             Page::Output => "08",
             Page::Settings => "09",
+            Page::Diagnostics => "10",
         }
     }
 
@@ -77,6 +81,7 @@ impl Page {
             Page::Profiles => "Per-game and auto-match",
             Page::Output => "Virtual pad, lightbar, vibration",
             Page::Settings => "Connection, slots, startup",
+            Page::Diagnostics => "Raw HID bytes and decoding",
         }
     }
 }

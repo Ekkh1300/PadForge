@@ -2,6 +2,7 @@
 
 pub mod controller;
 pub mod dashboard;
+pub mod diagnostics;
 pub mod gyro;
 pub mod mapping;
 pub mod output;

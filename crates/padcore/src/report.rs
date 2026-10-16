@@ -255,6 +255,42 @@ struct Layout {
     sensor: usize,
 }
 
+/// Where each group of fields lives in a DS4 report.
+///
+/// Public because the diagnostics page prints offsets, and a page printing its
+/// own offsets is a page that can disagree with the decoder. This is the one
+/// table both read.
+///
+/// The two transports are different documents rather than one with an offset
+/// applied to it: over Bluetooth the pad sends a report id and a CRC/flags byte
+/// before the same field block, so every position moves by two. A page that
+/// hard-coded either number would be wrong half the time, and wrong in the way
+/// that looks plausible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldOffsets {
+    /// First of the four stick bytes.
+    pub left_x: usize,
+    pub left_y: usize,
+    pub right_x: usize,
+    pub right_y: usize,
+    /// Low nibble is the hat switch, high nibble the four face buttons.
+    pub hat_and_face: usize,
+    /// L1, R1, the digital L2/R2, share, options, L3, R3 — one bit each.
+    pub shoulders: usize,
+    /// Pad button flags and the frame counter.
+    pub flags: usize,
+    pub l2: usize,
+    pub r2: usize,
+    /// Gyroscope, three little-endian 16-bit signed values.
+    pub gyro: usize,
+    /// Accelerometer, likewise.
+    pub accel: usize,
+    /// Touch flags and coordinates.
+    pub touch: usize,
+    /// Battery status byte.
+    pub battery: usize,
+}
+
 /// Report id the pad sends over USB.
 const REPORT_ID_USB: u8 = 0x01;
 /// Report id the pad sends over Bluetooth.
@@ -264,6 +300,41 @@ const REPORT_ID_USB: u8 = 0x01;
 /// that only accepts 0x01 therefore sees a Bluetooth pad as silent, which looks
 /// identical to a pad that is connected but not reporting.
 const REPORT_ID_BT: u8 = 0x11;
+
+impl FieldOffsets {
+    /// Offsets for a transport, or the USB ones when nothing is connected.
+    ///
+    /// Defaults to USB rather than to nothing: the page needs *a* layout to
+    /// label rows with, and guessing is worse than being consistent. It says
+    /// which one it used.
+    pub fn for_transport(transport: Option<Transport>) -> Self {
+        match transport {
+            Some(Transport::Bluetooth) => Self::from_base(3),
+            _ => Self::from_base(1),
+        }
+    }
+
+    /// `analog` is the first stick byte; every other field follows the decoder.
+    fn from_base(analog: usize) -> Self {
+        Self {
+            left_x: analog,
+            left_y: analog + 1,
+            right_x: analog + 2,
+            right_y: analog + 3,
+            hat_and_face: analog + 4,
+            shoulders: analog + 5,
+            flags: analog + 6,
+            l2: analog + 7,
+            r2: analog + 8,
+            // Sensors sit two bytes after the triggers, past the two-byte
+            // timestamp the pad stamps on every frame.
+            gyro: analog + 12,
+            accel: analog + 18,
+            touch: analog + 33,
+            battery: analog + 30,
+        }
+    }
+}
 
 impl Layout {
     /// Pick the layout from the report id at byte 0.

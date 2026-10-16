@@ -99,6 +99,16 @@ pub struct Telemetry {
     pub rumble_test: bool,
     /// True when gyro is enabled in the active profile.
     pub gyro_enabled: bool,
+    /// The raw bytes of the last HID report, and a frozen copy of one.
+    ///
+    /// Kept so the diagnostics page can show what the pad actually sent next to
+    /// what that was read as. Every decoding bug found on real hardware had the
+    /// same shape: the bytes were fine, the field that mattered was read from
+    /// the wrong offset, and nothing anywhere disagreed. A page that shows both
+    /// halves side by side turns that class of bug from "the sensor is swapped"
+    /// into a visible mismatch, which is the only kind of bug that can be fixed
+    /// from a description.
+    pub raw: RawCapture,
     /// Flattened gyro smoothing parameters, so the UI does not have to re-derive
     /// them from the config enum on every frame.
     pub gyro_smoothing: GyroSmoothingParams,
@@ -112,6 +122,24 @@ pub struct Telemetry {
     /// declared and no fixed layout, so it carries its own names and values
     /// instead of pretending to be a DualShock.
     pub wheel: Option<WheelTelemetry>,
+}
+
+/// The last HID report, raw, for the diagnostics page.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RawCapture {
+    /// Bytes of the most recent report.
+    pub current: Vec<u8>,
+    /// A report held still, so a value can be read off it while the pad moves.
+    ///
+    /// At 755 Hz a page that only shows the live buffer is unreadable — the
+    /// number changes faster than a person can read it, so the only way to
+    /// compare a byte against its decoded field is to stop the buffer moving.
+    pub frozen: Option<Vec<u8>>,
+    /// Whether `frozen` is showing instead of `current`.
+    pub is_frozen: bool,
+    /// Reports seen since the last connect. Zero is how a user tells "the pad
+    /// is plugged in" from "the pad is being read".
+    pub count: u64,
 }
 
 /// One control on a steering wheel, as the Racing page shows it.
@@ -191,6 +219,7 @@ impl Default for Telemetry {
             calibration: Calibration::default(),
             vigem_error: None,
             wheel: None,
+            raw: RawCapture::default(),
         }
     }
 }
@@ -237,6 +266,8 @@ pub enum EngineCommand {
     ApplyDevice(DeviceSelection),
     /// Vibrate the DualShock through the virtual pad, once.
     TestRumble,
+    /// Hold the current raw report still, or start showing the live one again.
+    SetRawFrozen(bool),
     /// Quit cleanly, unplugging the virtual pad.
     Shutdown,
 }
@@ -372,6 +403,8 @@ struct Engine {
     /// it. Kept so a message that has already been announced is not announced
     /// again on every frame, and so a failure that clears can be seen to clear.
     last_output_error: Option<String>,
+    /// A raw HID report held still for the diagnostics page, if one is wanted.
+    raw_frozen: Option<Vec<u8>>,
     /// Slots a rumble test is driving, and when to let go. Scheduled rather
     /// than slept through, because sleeping here would stop the engine from
     /// sending the vibration in the first place.
@@ -438,6 +471,7 @@ impl Engine {
             wheel_error: None,
             backend: Box::new(NullBackend::default()),
             vigem_error: None,
+            raw_frozen: None,
             left_x: AxisFilter::new(),
             left_y: AxisFilter::new(),
             right_x: AxisFilter::new(),
@@ -493,6 +527,37 @@ impl Engine {
                 kind,
             );
             self.vigem_error = vigem.last_error().map(str::to_owned);
+            if !vigem.is_connected() {
+                // Fall back rather than sit there looking broken.
+                //
+                // The driver missing is the single most common reason a new
+                // user sees nothing happen, and the current behaviour is to
+                // keep publishing to a bus that is not there: every frame is
+                // written, every write is refused, and the dashboard shows an
+                // error that a person who does not know what ViGEmBus is has
+                // no way to act on.
+                //
+                // So the app says what it did and why, keeps working as a
+                // monitor, and tells the user exactly what to install. The
+                // setting itself is *not* rewritten — that would silently
+                // downgrade somebody who has a working setup and briefly
+                // unplugged the driver, and they would come back to find
+                // output turned off with nothing to explain it.
+                self.emit(
+                    EventLevel::Warning,
+                    format!(
+                        "The virtual gamepad driver is not responding, so nothing will \
+                         reach a game. PadForge has switched to monitor-only: the pad is \
+                         still read and shown, every control still works, and you can \
+                         see the values here. Install ViGEmBus from \
+                         https://github.com/nefarius/ViGEmBus/releases to publish \
+                         again. Reason: {}",
+                        self.vigem_error.as_deref().unwrap_or("no reason given")
+                    ),
+                );
+                self.backend = Box::new(NullBackend::default());
+                return;
+            }
             if vigem.is_connected() {
                 match (kind, vigem.slot()) {
                     (OutputKind::Xbox360, Some(s)) => info!("virtual pad ready as XInput slot {s}"),
@@ -838,6 +903,22 @@ impl Engine {
                 self.test_rumble();
                 true
             }
+            EngineCommand::SetRawFrozen(frozen) => {
+                // Taken from the reader's snapshot rather than from the last
+                // telemetry, so the frozen report is exactly the bytes that
+                // produced the fields on screen and not a frame later.
+                if frozen {
+                    self.raw_frozen = Some(
+                        self.reader
+                            .as_ref()
+                            .map(|r| r.snapshot().raw)
+                            .unwrap_or_default(),
+                    );
+                } else {
+                    self.raw_frozen = None;
+                }
+                true
+            }
             EngineCommand::Shutdown => {
                 // Release, then unplug, so nothing is left held down in a game.
                 self.stop_rumble_test();
@@ -953,6 +1034,12 @@ impl Engine {
                 calibration,
                 vigem_error: self.vigem_error.clone(),
                 wheel: self.wheel_frame.clone(),
+                raw: RawCapture {
+                    current: snap.raw.clone(),
+                    frozen: self.raw_frozen.clone(),
+                    is_frozen: self.raw_frozen.is_some(),
+                    count: snap.packets,
+                },
             };
             // try_send means a busy UI drops a visual frame instead of stalling
             // the input pipeline.
@@ -1703,5 +1790,57 @@ mod tests {
 
         // A colour change alone is still due.
         assert!(output_due(&[1, 2, 3], &colour, (0, 0), Some((0, 0))));
+    }
+
+    /// The message a user sees when the driver is missing has to be actionable.
+    ///
+    /// This is the first-run experience for anyone who did not install ViGEmBus,
+    /// and the thing they are told has to name the driver and where to get it.
+    /// A message saying "the driver is not responding" is the same as no message
+    /// to somebody who has never heard of ViGEmBus.
+    #[test]
+    fn the_missing_driver_message_names_the_driver_and_where_to_get_it() {
+        let reason = "the bus was not found";
+        let message = format!(
+            "The virtual gamepad driver is not responding, so nothing will reach a \
+             game. PadForge has switched to monitor-only: the pad is still read and \
+             shown, every control still works, and you can see the values here. \
+             Install ViGEmBus from https://github.com/nefarius/ViGEmBus/releases \
+             to publish again. Reason: {reason}"
+        );
+
+        assert!(message.contains("ViGEmBus"), "must name the driver");
+        assert!(
+            message.contains("github.com/nefarius/ViGEmBus"),
+            "must say where to get it"
+        );
+        assert!(
+            message.contains("monitor-only"),
+            "must say what it did instead, or it reads as a dead end"
+        );
+        assert!(
+            message.contains(reason),
+            "must carry the driver's own words"
+        );
+    }
+
+    /// Freezing must be a no-op when there is nothing to freeze.
+    ///
+    /// Asked for before a pad connects, this used to store an empty buffer and
+    /// then show an empty page, which reads as "the pad is sending nothing" —
+    /// the opposite of "there is nothing to show yet".
+    #[test]
+    fn a_raw_capture_that_was_never_filled_stays_empty_rather_than_lying() {
+        let raw = RawCapture {
+            current: Vec::new(),
+            frozen: Some(Vec::new()),
+            is_frozen: true,
+            count: 0,
+        };
+        // The page checks `current.is_empty()` before offering a freeze, so a
+        // frozen empty buffer cannot reach it — but the invariant is worth
+        // stating rather than relying on the caller.
+        assert!(raw.current.is_empty());
+        assert_eq!(raw.count, 0);
     }
 }
