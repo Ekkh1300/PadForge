@@ -58,7 +58,7 @@ pub enum Prepared {
     Migrated(Value),
 }
 
-/// Read `value` forward to [`current`].
+/// Read `value` forward to the schema this build writes, given as `current`.
 ///
 /// Migrations are matched on the *source* version and applied in order, so
 /// going 0 -> 1 -> 2 is three steps and going 1 -> 2 is one, without the code

@@ -94,6 +94,39 @@ if runs:
     r = json.loads(runs)[0]
     check("latest CI run is green", r["conclusion"] == "success", r["name"])
 
+print("\nthe project's own files")
+# A public repo whose contribution guide and issue templates are missing is a
+# repo that tells nobody how to help it, which is a way of saying no.
+for name in (
+    "CONTRIBUTING.md",
+    "LICENSE",
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    ".github/ISSUE_TEMPLATE/feature_request.yml",
+    "docs/roadmap.md",
+    "tools/release_notes.py",
+):
+    path = os.path.join(ROOT, *name.split("/"))
+    check(f"{name} is committed", os.path.isfile(path) and not run("git", "ls-files", "--error-unmatch", name).returncode)
+
+repo_full = gh("api", f"repos/{REPO}", "--jq", ".has_discussions")
+check("discussions are on", repo_full.strip() == "true")
+
+# A tag-triggered build is the difference between the release page and a
+# download a person compiled themselves. Checked in the workflow rather than
+# assumed, because a trigger typed slightly wrong looks identical to one that
+# was never added.
+workflow = open(os.path.join(ROOT, ".github", "workflows", "ci.yml"), encoding="utf-8").read()
+check("a tag triggers a build", 'tags: ["v*"]' in workflow)
+check("a release job exists", "\n  release:" in workflow)
+check("releases carry a checksum", "SHA256SUMS" in workflow)
+
+print("\nthe hot path")
+perf = run(
+    "cargo", "test", "-p", "padcore", "--release", "--target", "x86_64-pc-windows-gnu",
+    "--test", "perf", "--", "--ignored", "--nocapture", "--test-threads=1",
+)
+check("the hot path is within budget", perf.returncode == 0)
+
 print("\nthe working tree")
 st = run("git", "status", "--porcelain")
 check("nothing uncommitted", not st.stdout.strip(), st.stdout.strip()[:60])
