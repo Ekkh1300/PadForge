@@ -53,14 +53,26 @@ pub enum DeviceSelection {
     #[default]
     Auto,
     /// One specific pad, by serial number.
-    Serial(String),
+    ///
+    /// A **struct** variant, and that is load-bearing. `Serial(String)` looks
+    /// equivalent and is not: serde cannot serialise an internally tagged
+    /// newtype variant holding a primitive, and it fails at run time rather
+    /// than at compile time. So the obvious spelling of this enum meant that
+    /// choosing a specific pad made `Settings::save` return an error — and
+    /// every other setting silently stopped being written, with the file on
+    /// disk still holding the previous run's values. The failure was invisible
+    /// because nothing reported the error either.
+    ///
+    /// Struct variants are what internally tagged enums actually support, and
+    /// this one now round-trips.
+    Serial { serial: String },
 }
 
 impl DeviceSelection {
     pub fn serial(&self) -> Option<&str> {
         match self {
             DeviceSelection::Auto => None,
-            DeviceSelection::Serial(s) => Some(s.as_str()),
+            DeviceSelection::Serial { serial } => Some(serial.as_str()),
         }
     }
 }
@@ -194,6 +206,18 @@ impl WheelSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// Container-level, not per-field. Without it, `serde` insists on every field
+// being present, so a file missing *one* key fails to parse entirely — and the
+// caller's response to a failed parse is `Default::default()`. That turns a
+// single unknown future field, or one line a user deleted while hand-editing,
+// into every setting being silently reset.
+//
+// With it, an absent field falls back to this type's `Default`, so a file is
+// read as far as it can be understood and only the parts that are actually
+// missing take the default. It also means a field added in a later version
+// needs no `#[serde(default)]` of its own, which is where the omission would
+// otherwise come from.
+#[serde(default)]
 pub struct Settings {
     pub device: DeviceSelection,
     pub poll_rate_hz: u32,
@@ -284,21 +308,40 @@ impl Settings {
         self
     }
 
+    /// Load the settings, migrating the file forward if it is from an older
+    /// build.
+    ///
+    /// The boolean is "it is safe to write this back". It is false for two
+    /// different situations and both are worth honouring: a file that would not
+    /// parse, and a file from a *newer* build. In the first case a copy has
+    /// already been kept; in the second, writing back would delete fields this
+    /// build does not know about.
+    pub fn load_with_migration() -> (Self, bool) {
+        let (loaded, safe) = crate::schema::load::<Settings>(
+            &paths::settings_file(),
+            crate::schema::SETTINGS_SCHEMA,
+            "settings",
+        );
+        (loaded.map(Settings::sanitised).unwrap_or_default(), safe)
+    }
+
     pub fn load() -> Self {
-        paths::read_json(&paths::settings_file())
-            .map(Settings::sanitised)
-            .unwrap_or_default()
+        Self::load_with_migration().0
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        paths::write_json(&paths::settings_file(), self)
+        crate::schema::write(
+            &paths::settings_file(),
+            self,
+            crate::schema::SETTINGS_SCHEMA,
+        )
     }
 
     /// Human-readable summary of the device binding, for the status bar.
     pub fn device_label(&self) -> String {
         match &self.device {
             DeviceSelection::Auto => "First pad to connect".into(),
-            DeviceSelection::Serial(s) => format!("Serial {s}"),
+            DeviceSelection::Serial { serial } => format!("Serial {serial}"),
         }
     }
 }
@@ -464,7 +507,9 @@ mod tests {
     #[test]
     fn device_selection_serial_accessor() {
         assert!(DeviceSelection::Auto.serial().is_none());
-        let d = DeviceSelection::Serial("abc".into());
+        let d = DeviceSelection::Serial {
+            serial: "abc".into(),
+        };
         assert_eq!(d.serial(), Some("abc"));
     }
 
@@ -613,6 +658,64 @@ mod tests {
         let json = serde_json::to_string(&s).expect("serialize");
         let back: Settings = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.wheel, s.wheel);
+    }
+
+    /// Every setting must survive a save. Not most of them, and not "the ones
+    /// with a default" — all of them, for every value of every enum.
+    ///
+    /// This exists because of a real bug it would have caught: `DeviceSelection`
+    /// was spelled `Serial(String)`, which serde cannot serialise under
+    /// internal tagging. Selecting a specific pad therefore made `save` fail,
+    /// so *no* setting was written from that point on — and the app reported
+    /// nothing, because a failed write is not an event anyone was listening
+    /// for. The user changed their poll rate, closed the app, and came back to
+    /// the old poll rate.
+    #[test]
+    fn every_setting_value_can_actually_be_written_to_disk() {
+        // One non-default value for every enum, each chosen to be one nobody
+        // would pick by accident. Enumerated by hand rather than generated,
+        // because the point is coverage and a generated list only covers what
+        // the generator knows about.
+        let device = DeviceSelection::Serial {
+            serial: "DS4-9f2a".into(),
+        };
+        let output_mode = OutputMode::MonitorOnly;
+        let output_kind = OutputKind::DualShock4;
+        let virtual_slot = SlotChoice::Player(3);
+
+        let settings = Settings {
+            device: device.clone(),
+            output_mode,
+            output_kind,
+            virtual_slot,
+            poll_rate_hz: 1000,
+            ..Default::default()
+        };
+
+        let dir = std::env::temp_dir().join(format!("padforge-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("settings.json");
+
+        crate::schema::write(&path, &settings, crate::schema::SETTINGS_SCHEMA)
+            .unwrap_or_else(|e| panic!("settings with a selected device must be writable: {e}"));
+
+        let text = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            text.contains("DS4-9f2a"),
+            "the serial must be on disk: {text}"
+        );
+
+        let (back, safe) =
+            crate::schema::load::<Settings>(&path, crate::schema::SETTINGS_SCHEMA, "settings");
+        assert!(safe);
+        assert_eq!(
+            back.expect("must read back"),
+            settings,
+            "the round trip changed it"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

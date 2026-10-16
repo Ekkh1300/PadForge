@@ -416,9 +416,9 @@ fn backend_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Te
                 ui.horizontal(|ui| {
                     ui.radio_value(
                         &mut ctx.state.settings.device,
-                        padcore::settings::DeviceSelection::Serial(
-                            device.serial.clone().unwrap_or_default(),
-                        ),
+                        padcore::settings::DeviceSelection::Serial {
+                            serial: device.serial.clone().unwrap_or_default(),
+                        },
                         device.label(),
                     );
                     if selected {

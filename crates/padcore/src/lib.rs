@@ -18,6 +18,7 @@ pub mod pointer;
 pub mod process;
 pub mod profile;
 pub mod report;
+pub mod schema;
 pub mod settings;
 pub mod touchpad;
 pub mod wheel;

@@ -476,6 +476,11 @@ pub fn new_id() -> String {
 
 /// Everything loaded from disk: profiles plus which one is active.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+// See the note on `Settings`: a missing key falls back to the default rather
+// than failing the whole parse, so one unrecognised field cannot reset the
+// profile list. Individual profiles that still do not fit are dropped by
+// `load_with_migration` rather than taking the whole store with them.
+#[serde(default)]
 pub struct ProfileStore {
     /// All known profiles, ordered as shown in the UI.
     pub profiles: Vec<Profile>,
@@ -589,13 +594,117 @@ impl ProfileStore {
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        paths::write_json(&profiles_file(), self)
+        crate::schema::write(&profiles_file(), self, crate::schema::PROFILE_SCHEMA)
+    }
+
+    /// Load the store, migrating the file forward if it is from an older build.
+    ///
+    /// The second value means "it is safe to write this back"; see
+    /// [`crate::schema`] for why a file from a newer build must not be.
+    pub fn load_with_migration() -> (Self, bool) {
+        let (loaded, safe) = crate::schema::load::<ProfileStore>(
+            &profiles_file(),
+            crate::schema::PROFILE_SCHEMA,
+            "profiles",
+        );
+        let store = match loaded {
+            Some(s) => s,
+            None => Self::salvage(),
+        };
+        let mut store = store;
+        // The repair writes, so it has to respect the same rule. On a first run
+        // `bootstrap` has nothing to repair and does not save, so `safe` being
+        // true there costs nothing.
+        if safe {
+            store.repair_system_reserved_bindings();
+        }
+        (store, safe)
+    }
+
+    /// Rebuild a store from a file whose *store* would not parse, keeping the
+    /// profiles that do.
+    ///
+    /// `Profile` is deliberately stricter than `Settings`: it has an `id` and a
+    /// `name`, and a profile missing either is not a profile — it is a
+    /// collision waiting to happen, and two profiles claiming the same id is a
+    /// worse bug than losing one.
+    ///
+    /// Which means one damaged entry in the array fails the whole array, and a
+    /// user with nine good profiles loses all nine because of the tenth. So
+    /// when that happens, each element is tried on its own and only the ones
+    /// that genuinely do not fit are dropped — with their original bytes
+    /// written beside the file, so a profile lost to a schema change is still
+    /// recoverable by hand.
+    fn salvage() -> Self {
+        Self::recover_from(&profiles_file())
+    }
+
+    /// Build a store from `path`, keeping the profiles that parse.
+    ///
+    /// Takes the path rather than reading the global one so this is testable
+    /// against a scratch directory: writing a salvage file to the developer's
+    /// real `%APPDATA%\PadForge\profiles` during a test would be its own bug.
+    pub fn recover_from(path: &std::path::Path) -> Self {
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return Self::bootstrap();
+        };
+        let body = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+            // Not JSON at all. `schema::load` has already copied it aside.
+            return Self::bootstrap();
+        };
+
+        let items = match value.get("profiles").and_then(|v| v.as_array()) {
+            Some(a) => a,
+            None => return Self::bootstrap(),
+        };
+
+        let mut profiles = Vec::new();
+        for item in items {
+            match serde_json::from_value::<Profile>(item.clone()) {
+                Ok(p) => profiles.push(p),
+                Err(e) => {
+                    tracing::warn!(
+                        name = item.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
+                        %e,
+                        "this profile does not fit the current schema; the other \
+                         profiles were kept and its raw text was saved beside the store"
+                    );
+                    let name = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unnamed");
+                    let file = profile_salvage_file(path, name);
+                    let _ = std::fs::write(
+                        &file,
+                        serde_json::to_string_pretty(item).unwrap_or_default(),
+                    );
+                }
+            }
+        }
+
+        if profiles.is_empty() {
+            return Self::bootstrap();
+        }
+
+        let dropped = items.len() - profiles.len();
+        let first_id = profiles.first().map(|p| p.id.clone());
+        tracing::warn!(
+            kept = profiles.len(),
+            dropped,
+            "recovered a partial profile store"
+        );
+
+        Self {
+            profiles,
+            active: 0,
+            auto_profiles: Vec::new(),
+            default_profile: first_id,
+        }
     }
 
     pub fn load() -> Self {
-        let mut store = paths::read_json(&profiles_file()).unwrap_or_else(Self::bootstrap);
-        store.repair_system_reserved_bindings();
-        store
+        Self::load_with_migration().0
     }
 
     /// Neutralise bindings that Windows reserves for itself, wherever they came from.
@@ -638,6 +747,32 @@ pub fn profiles_file() -> PathBuf {
 /// Where a single exported profile is written.
 pub fn export_file(name: &str) -> PathBuf {
     paths::profiles_dir().join(format!("{name}.json"))
+}
+
+/// Where a profile that would not parse is kept.
+///
+/// Beside the store rather than in a `logs` folder, because the person who
+/// needs this file is recovering a profile by hand and will look where they
+/// expect. The name is sanitised because `name` comes from the file itself and
+/// may contain a path separator or a drive letter — writing it out verbatim
+/// would turn a corrupt profile into a file written somewhere else entirely.
+fn profile_salvage_file(store: &std::path::Path, name: &str) -> PathBuf {
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(48)
+        .collect();
+    let stem = if safe.is_empty() { "profile" } else { &safe };
+    store
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(format!("{stem}.not-loaded.json"))
 }
 
 /// Rule that switches to a profile when a given process is in the foreground.
