@@ -154,6 +154,10 @@ after = run("python", "-c", "import hashlib;print(hashlib.sha256(open(r'tools/pa
 check("icon regenerates identically", before.stdout.strip() == after.stdout.strip())
 check("icon generator needs no Pillow", "PIL" not in open(os.path.join(ROOT, "tools", "make_icon.py"), encoding="utf-8").read())
 
+print("\nthe changelog generator")
+notes = run(py, os.path.join(ROOT, "tools", "test_release_notes.py"))
+check("release-notes tests pass", notes.returncode == 0, notes.stderr.strip().splitlines()[-1] if notes.stderr.strip() else "")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed: {', '.join(failures)}")

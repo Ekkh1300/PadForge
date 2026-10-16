@@ -122,12 +122,17 @@ def sentence(text: str) -> str:
 
 def collect(since: str | None) -> list[tuple[str, str, str, bool]]:
     rng = f"{since}..HEAD" if since else "HEAD"
-    # A stable, NUL-separated log. `-z` because a subject can contain anything
-    # else, including a newline once %B is involved -- not here, since %s is one
-    # line by definition, but the separator still avoids quoting problems with
-    # quotes and backslashes in a subject, which are ordinary.
-    raw = git("log", "--no-merges", "--format=%s%x00", rng)
-    subjects = [s for s in raw.split("\0") if s.strip()]
+    # `%s` is the subject, which git guarantees is a single line -- so
+    # `splitlines` is a complete record separator and nothing cleverer is
+    # needed.
+    #
+    # This used to ask for `%s%x00` and split on the NUL. That separator never
+    # arrived, every commit became one blob, and `parse_subject` took
+    # `splitlines()[0]` -- so a release note covering eight commits listed one,
+    # and listed it confidently. The failure is invisible by construction: the
+    # output looks exactly like a release with a single change in it.
+    raw = git("log", "--no-merges", "--format=%s", rng)
+    subjects = [s for s in raw.splitlines() if s.strip()]
     return [p for p in (parse_subject(s) for s in subjects) if p]
 
 
@@ -138,11 +143,16 @@ def render(commits: list[tuple[str, str, str, bool]]) -> str:
     grouped: dict[str, list[str]] = {}
     breaking: list[str] = []
     untyped = 0
+    internal = 0
 
     for kind, scope, text, is_breaking in commits:
         if is_breaking:
             breaking.append(f"**{scope}**: {text}" if scope else text)
         if kind in INTERNAL:
+            # Counted, not dropped. A commit that vanishes between the log and
+            # the notes is the failure this whole script is about, and "it was
+            # only a chore" is not a reason nobody is told.
+            internal += 1
             continue
         if kind == "other":
             untyped += 1
@@ -155,12 +165,17 @@ def render(commits: list[tuple[str, str, str, bool]]) -> str:
         out += [f"- {b}" for b in breaking]
         out.append("")
 
+    # A one-commit release reads better as a sentence than as a heading
+    # followed by one bullet. More than one, and the headings carry the
+    # structure -- applying the rule per group would give "One." and then
+    # "**wheel**: Wheel profiles." with nothing to tell them apart.
+    single = len(commits) == 1
+
     for kind, _label, _ in GROUPS:
         items = grouped.get(kind)
         if not items:
             continue
-        # A single item reads better as a sentence than as a one-bullet list.
-        if len(items) == 1 and not breaking:
+        if single:
             out.append(items[0] + "\n")
             continue
         out.append(f"### {HEADINGS[kind]}\n")
@@ -181,6 +196,13 @@ def render(commits: list[tuple[str, str, str, bool]]) -> str:
             file=sys.stderr,
         )
 
+    if internal:
+        print(
+            f"note: {internal} maintenance commit(s) (chore, style, ci) were left out. "
+            f"Use 'ci:' only when the change is worth telling a user about.",
+            file=sys.stderr,
+        )
+
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -189,6 +211,13 @@ def main() -> int:
     since = args[0] if args else None
 
     commits = collect(since)
+    if not commits:
+        print(
+            f"warning: no commits found since {since or 'the beginning'}. If that "
+            f"is unexpected, check the tag exists and the history was fetched "
+            f"(git fetch --tags).",
+            file=sys.stderr,
+        )
     sys.stdout.write(render(commits))
     return 0
 

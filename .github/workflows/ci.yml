@@ -77,6 +77,13 @@ jobs:
           }
           "icon is up to date" | Out-Host
 
+      # The changelog generator shipped a bug that dropped seven of eight
+      # commits from a release note, silently. Its output for that case looked
+      # exactly like a release with one change in it, so nothing above this line
+      # could have noticed.
+      - name: the changelog generator
+        run: python tools\test_release_notes.py
+
       - name: rustfmt
         run: cargo fmt --all -- --check
 
