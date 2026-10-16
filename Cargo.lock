@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "padcore"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "bytemuck",
  "hidapi",
@@ -2685,7 +2685,7 @@ dependencies = [
 
 [[package]]
 name = "padforge"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2704,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "padforge-installer"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "windows-sys 0.61.2",
 ]

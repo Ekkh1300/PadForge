@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/padcore", "crates/padforge", "crates/padforge-installer"]
 
 [workspace.package]
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"
