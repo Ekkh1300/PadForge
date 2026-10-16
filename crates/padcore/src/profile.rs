@@ -573,6 +573,37 @@ impl ProfileStore {
         }
     }
 
+    /// Select by the name a person would type, returning the id.
+    ///
+    /// For `--profile NAME`, so it has to be forgiving about the things a
+    /// person gets wrong: surrounding whitespace, and case. Both are mistakes
+    /// rather than intentions — nobody means to pass a profile called
+    /// " driving" — and refusing to start over one is a poor trade.
+    ///
+    /// The error carries the names that do exist, because the overwhelmingly
+    /// likely cause is a guess, and the list turns that into a fix.
+    pub fn select_by_name(&mut self, name: &str) -> Result<String, Vec<String>> {
+        let wanted = name.trim();
+        let matches =
+            |p: &Profile| p.name.eq_ignore_ascii_case(wanted) || p.id.eq_ignore_ascii_case(wanted);
+
+        if let Some(p) = self.profiles.iter().find(|p| matches(p)) {
+            let id = p.id.clone();
+            self.select(&id);
+            return Ok(id);
+        }
+
+        Err(self.profiles.iter().map(|p| p.name.clone()).collect())
+    }
+
+    /// Name of the active profile, for `--check` and the status line.
+    pub fn active_profile_name(&self) -> String {
+        self.profiles
+            .get(self.active)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "none".into())
+    }
+
     /// Cycle forward (or backward) through the profile list.
     pub fn cycle(&mut self, delta: isize) {
         if self.profiles.is_empty() {

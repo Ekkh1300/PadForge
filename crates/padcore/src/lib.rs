@@ -5,6 +5,7 @@
 //! chain, remaps each control onto whatever target you like, and publishes the
 //! result as a virtual gamepad.
 
+pub mod bugreport;
 pub mod device;
 pub mod engine;
 pub mod filters;
@@ -18,6 +19,7 @@ pub mod pointer;
 pub mod process;
 pub mod profile;
 pub mod report;
+pub mod report_zip;
 pub mod schema;
 pub mod settings;
 pub mod touchpad;

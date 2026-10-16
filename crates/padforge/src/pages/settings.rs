@@ -443,16 +443,110 @@ fn diagnostics(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
             });
         }
         ui.add_space(SPACE_MD);
-        if secondary_button(ui, "Open the data folder").clicked() {
-            let dir = padcore::paths::config_dir();
-            if let Err(e) = std::process::Command::new("explorer").arg(&dir).spawn() {
+        ui.horizontal(|ui| {
+            if secondary_button(ui, "Open the data folder").clicked() {
+                let dir = padcore::paths::config_dir();
+                if let Err(e) = std::process::Command::new("explorer").arg(&dir).spawn() {
+                    ctx.state.toast(
+                        format!("Could not open {}: {e}", dir.display()),
+                        ToastLevel::Error,
+                    );
+                }
+            }
+            if primary_button(ui, "Report a bug").clicked() {
+                build_report(ctx);
+            }
+        });
+        ui.label(
+            RichText::new(
+                "Collects the log, your settings and your profiles into one file in your \
+                 Downloads folder, ready to attach to an issue. Your device serial is \
+                 removed; nothing else is.",
+            )
+            .color(TEXT_FAINT)
+            .size(11.5),
+        );
+    });
+}
+
+/// Build a bug report and say plainly where it went.
+fn build_report(ctx: &mut super::Ctx) {
+    let telemetry = ctx.engine.telemetry();
+
+    // The things a maintainer will otherwise ask for in the first reply. All of
+    // them are already known here, so asking means one extra round trip per
+    // report.
+    let summary = format!(
+        "PadForge {}\n\
+         pad: {}\n\
+         transport: {}\n\
+         output: {}\n\
+         profile: {}\n\
+         reports seen: {}\n\
+         output slot: {}\n\
+         lightbar: rgb({}, {}, {})\n\
+         gyroscope enabled: {}\n\
+         pointer problem: {}\n\
+         output problem: {}\n",
+        padcore::APP_VERSION,
+        if telemetry.connected {
+            telemetry.device_label.clone()
+        } else {
+            "not connected".into()
+        },
+        telemetry
+            .transport
+            .map(|t| t.label().to_string())
+            .unwrap_or_else(|| "-".into()),
+        telemetry.output_backend,
+        telemetry.profile_name,
+        telemetry.packets,
+        telemetry
+            .output_slot
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "not reported".into()),
+        telemetry.lightbar[0],
+        telemetry.lightbar[1],
+        telemetry.lightbar[2],
+        telemetry.gyro_enabled,
+        telemetry.pointer_error.as_deref().unwrap_or("none"),
+        telemetry.output_error.as_deref().unwrap_or("none"),
+    );
+
+    match padcore::bugreport::build(&summary) {
+        Ok(built) => {
+            tracing::info!(path = %built.path.display(), entries = built.entries, "bug report built");
+            if !built.missing.is_empty() {
                 ctx.state.toast(
-                    format!("Could not open {}: {e}", dir.display()),
-                    ToastLevel::Error,
+                    format!(
+                        "Report saved, but {} could not be collected.",
+                        built.missing.join(", ")
+                    ),
+                    ToastLevel::Warning,
+                );
+            } else {
+                ctx.state.toast(
+                    format!("Report saved to {}", built.path.display()),
+                    ToastLevel::Success,
                 );
             }
+            // Only offer to open the folder when the file exists. Offering it
+            // otherwise is the kind of small lie that makes a person distrust
+            // the next message.
+            let path = built.path.clone();
+            let _ = std::process::Command::new("explorer")
+                .arg("/select,")
+                .arg(&path)
+                .spawn();
         }
-    });
+        Err(e) => {
+            tracing::error!(%e, "could not build the bug report");
+            ctx.state.toast(
+                format!("Could not build the report: {e}"),
+                ToastLevel::Error,
+            );
+        }
+    }
 }
 fn action_label(action: &HotkeyAction) -> &'static str {
     match action {
