@@ -3,6 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+    # A tag is a release. Building it here rather than by hand means the binary
+    # on the release page came from the same commit that passed the checks, and
+    # that the checksum next to it was computed by the same run. An unsigned
+    # artefact built by a person on a Tuesday is the thing this is replacing.
+    tags: ["v*"]
   pull_request:
 
 env:
@@ -94,7 +99,13 @@ jobs:
     name: hot path throughput
     runs-on: windows-latest
 
-    # Numbers are machine-dependent, so this reports rather than gates.
+    # This gates. It used to only report, on the grounds that the numbers are
+    # machine-dependent -- which is true, and which is why the harness now takes
+    # the best of three runs rather than the mean. A loaded runner pushes
+    # individual timings up; taking the best run discards that, so the figure
+    # left is the one that is actually about this code. The budgets sit 15x and
+    # 30x above the measured values, which is where a shared runner can run
+    # before it fails a build for a reason that is not the code.
     steps:
       - uses: actions/checkout@v4
 
@@ -109,3 +120,109 @@ jobs:
 
       - name: measure
         run: cargo test -p padcore --release --target x86_64-pc-windows-gnu --test perf -- --ignored --nocapture --test-threads=1
+
+  release:
+    name: build the installer
+    # Only for a tag, and only once the checks have passed. A release built
+    # before the tests run would publish a binary that CI then rejects.
+    needs: [check, performance]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The changelog is generated from the commit log, so it needs the
+          # history and the tags, not just the tree.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Locate the GNU toolchain
+        shell: pwsh
+        run: |
+          $candidates = @("C:\mingw64\bin", "C:\msys64\mingw64\bin")
+          $found = $candidates | Where-Object { Test-Path $_ }
+          if ($found) {
+            "$($found[0])" >> $env:GITHUB_PATH
+          } else {
+            choco install mingw --no-progress -y
+            "C:\ProgramData\mingw64\mingw64\bin" >> $env:GITHUB_PATH
+          }
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build the installer
+        shell: cmd
+        run: build-installer.cmd
+
+      # What a downloader can check without trusting us or trusting their
+      # connection.
+      #
+      # PadForge is not code-signed. A self-signed certificate does not fix
+      # that: SmartScreen treats an untrusted publisher as worse than an unsigned
+      # one, because the signature is there and the name on it means nothing.
+      # Clearing it needs a certificate from a real authority, which costs money
+      # and time and is a decision for the maintainer, not the build. Until
+      # then this is the honest mitigation, so it is generated here rather than
+      # pasted in by hand where it would immediately be out of date.
+      - name: SHA256SUMS
+        shell: pwsh
+        run: |
+          $setup = "dist\PadForge-Setup.exe"
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          # `<hash>  <name>` with two spaces, which is the format `sha256sum -c`
+          # and every Windows equivalent expect. One space does not parse.
+          "$hash  PadForge-Setup.exe" | Out-File -FilePath dist\SHA256SUMS.txt -Encoding ascii -NoNewline
+          "$hash  PadForge-Setup.exe" | Out-Host
+
+      - name: Changelog from the commit log
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          # The tag before this one, which is what "since" means here.
+          $all = git tag --sort=v:refname
+          $previous = $all | Where-Object { $_ -ne $tag } | Select-Object -Last 1
+          if ($previous) {
+            "since $previous" | Out-Host
+            python tools\release_notes.py $previous > dist\CHANGELOG.md
+          } else {
+            "first tag; the whole history" | Out-Host
+            python tools\release_notes.py > dist\CHANGELOG.md
+          }
+          Get-Content dist\CHANGELOG.md | Out-Host
+
+      - name: Upload the artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: padforge-${{ github.ref_name }}
+          if-no-files-found: error
+          path: |
+            dist/PadForge-Setup.exe
+            dist/SHA256SUMS.txt
+            dist/CHANGELOG.md
+
+      # A draft, not a published release. Publishing is a human decision: this
+      # workflow can prove the artefact builds and its checksum matches, and it
+      # cannot prove the notes are right.
+      - name: Create a draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            dist/PadForge-Setup.exe
+            dist/SHA256SUMS.txt
+            dist/CHANGELOG.md
+          body_path: dist/CHANGELOG.md
+          name: PadForge ${{ github.ref_name }}
