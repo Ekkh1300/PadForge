@@ -207,6 +207,39 @@ impl PadPreview {
             }
             painter.rect_filled(band_rect, RADIUS_LG, SHELL.lerp_to_gamma(SHELL_SHADE, k));
         }
+        // Curvature along the length: the shell rolls away on both sides,
+        // which the top-to-bottom gradient alone does not say. Clipped to the
+        // body so the bands cannot walk onto the card behind it.
+        let band_w = body_w * 0.085;
+        let band_painter = ui.painter_at(body_rect);
+        for x0 in [body_rect.min.x, body_rect.max.x - band_w] {
+            band_painter.rect_filled(
+                Rect::from_min_size(
+                    Pos2::new(x0, body_rect.min.y),
+                    Vec2::new(band_w, body_rect.height()),
+                ),
+                RADIUS_LG,
+                Color32::from_black_alpha(26),
+            );
+        }
+        // The grips catch the same rule: a shade tucked toward the body and
+        // top, a lit chunk of shell left on the outer underside, and a small
+        // specular spot up top. Without these the lobes were flat circles
+        // glued to a gradient.
+        for grip in grips {
+            let toward = (cx - grip.x).signum();
+            painter.circle_filled(
+                grip + Vec2::new(toward * 2.5, 3.0),
+                grip_r * 0.92,
+                SHELL.lerp_to_gamma(SHELL_SHADE, 0.45),
+            );
+            painter.circle_filled(grip, grip_r * 0.74, SHELL);
+            painter.circle_filled(
+                grip + Vec2::new(toward * 2.0, -grip_r * 0.45),
+                grip_r * 0.30,
+                Color32::from_white_alpha(13),
+            );
+        }
         // The gradient is square-cornered, so the rounded outline goes back on
         // top of it.
         painter.rect_stroke(
@@ -427,11 +460,20 @@ impl PadPreview {
             "=",
             b.contains(Buttons::OPTIONS),
         );
-        // The PS button carries no bit of its own in the report, so it is drawn
-        // as it sits rather than as a state that would never change.
+        // The PS button carries no bit of its own in the report, so it is
+        // drawn as it sits rather than as a state that would never change --
+        // named, since a bare disc next to named buttons is the one control on
+        // the pad nobody could bind without consulting the page below.
         let ps = Pos2::new(cx, body_cy + body_h * 0.36);
         painter.circle_filled(ps, 9.0 * scale, SURFACE_HOVER);
         painter.circle_stroke(ps, 9.0 * scale, Stroke::new(1.0, BORDER));
+        painter.text(
+            ps,
+            egui::Align2::CENTER_CENTER,
+            "PS",
+            FontId::proportional(6.5 * scale),
+            TEXT_MUTED,
+        );
 
         response
     }
@@ -458,21 +500,59 @@ fn draw_stick(
     painter.circle_stroke(center, radius, Stroke::new(1.0, BORDER));
 
     let magnitude = (x * x + y * y).sqrt().clamp(0.0, 1.0);
+    // The range the cap can travel over, ghosted inside the well: without it
+    // an at-rest stick says nothing about where a deflection can go, and the
+    // well is a socket with a future that is invisible.
     let travel = radius * 0.48;
+    painter.circle_stroke(center, travel, Stroke::new(1.0, TRACK));
+
     // The report's Y is already inverted, so +y is up on screen.
     let cap = center + Vec2::new(x * travel, -y * travel);
     let cap_r = radius * 0.52;
     let deflected = magnitude > 0.02;
     if deflected {
         glow(painter, cap, cap_r * 1.5, active);
+    } else {
+        // The origin, marked while the stick rests: the cross is where a
+        // deflection starts and the reference it is changed against, and a
+        // deflected stick carries its own accent instead.
+        let a = radius * 0.09;
+        painter.line_segment(
+            [
+                Pos2::new(center.x - a, center.y),
+                Pos2::new(center.x + a, center.y),
+            ],
+            Stroke::new(1.0, TEXT_FAINT),
+        );
+        painter.line_segment(
+            [
+                Pos2::new(center.x, center.y - a),
+                Pos2::new(center.x, center.y + a),
+            ],
+            Stroke::new(1.0, TEXT_FAINT),
+        );
     }
+
     // A dark cap in a lighter well, so the two sticks do not sit on the body
     // as pale discs; the accent only arrives when the stick actually moves.
+    // The cap is a raised object, not a painted circle: a shadow tucked under
+    // its lower edge and a light spot on its upper-left are what lift it off
+    // the well -- the same two cues as the shell's gradient and highlight.
+    painter.circle_filled(
+        cap + Vec2::new(0.0, 2.2),
+        cap_r,
+        Color32::from_black_alpha(80),
+    );
     painter.circle_filled(cap, cap_r, if deflected { active } else { SURFACE_HOVER });
     painter.circle_stroke(
         cap,
         cap_r,
         Stroke::new(1.0, if deflected { active } else { idle }),
+    );
+    painter.circle_filled(
+        cap - Vec2::new(cap_r * 0.30, cap_r * 0.32),
+        cap_r * 0.38,
+        Color32::from_white_alpha(if deflected { 26 } else { 14 }),
     );
 }
 
@@ -486,38 +566,58 @@ fn draw_dpad(
     left: bool,
     right: bool,
 ) {
+    // The dish the cross sits in: on the hardware the pressing surface is a
+    // recessed disc, and a bare cross floating on the shell is why the d-pad
+    // used to read as a sticker rather than as a control.
+    painter.circle_filled(center, r * 1.12, BACKDROP);
+    painter.circle_stroke(center, r * 1.12, Stroke::new(1.0, BORDER));
+    painter.circle_filled(center, r * 0.16, Color32::from_black_alpha(70));
+
     let arm = r * 0.42;
     let len = r * 0.95;
-    let shape: [Rect; 4] = [
-        Rect::from_center_size(
-            Pos2::new(center.x, center.y - len * 0.55),
-            Vec2::new(arm * 2.0, len),
-        ),
-        Rect::from_center_size(
-            Pos2::new(center.x, center.y + len * 0.55),
-            Vec2::new(arm * 2.0, len),
-        ),
-        Rect::from_center_size(
-            Pos2::new(center.x - len * 0.55, center.y),
-            Vec2::new(len, arm * 2.0),
-        ),
-        Rect::from_center_size(
-            Pos2::new(center.x + len * 0.55, center.y),
-            Vec2::new(len, arm * 2.0),
-        ),
-    ];
-    for (i, rect) in shape.iter().enumerate() {
-        let lit = match i {
-            0 => up,
-            1 => down,
-            2 => left,
-            _ => right,
-        };
+    // Each arm with the direction it presses: the lit state gets a notch
+    // pointing that way, so "up" reads as a triangle pointing up rather than
+    // as a colour that happens to also mean up.
+    let dirs = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+    for (i, &(dx, dy)) in dirs.iter().enumerate() {
+        let rect = Rect::from_center_size(
+            Pos2::new(
+                center.x + dx as f32 * len * 0.55,
+                center.y + dy as f32 * len * 0.55,
+            ),
+            if dy == 0 {
+                Vec2::new(len, arm * 2.0)
+            } else {
+                Vec2::new(arm * 2.0, len)
+            },
+        );
+        let lit = [up, down, left, right][i];
         painter.rect_filled(
-            *rect,
-            CornerRadius::same(3),
+            rect,
+            CornerRadius::same(4),
             if lit { ACCENT } else { SURFACE_HOVER },
         );
+        if !lit {
+            continue;
+        }
+        let (px, py) = (dy, dx);
+        let tip = Pos2::new(
+            center.x + dx as f32 * len * 0.80,
+            center.y + dy as f32 * len * 0.80,
+        );
+        let b1 = Pos2::new(
+            center.x + dx as f32 * len * 0.44 + px as f32 * arm * 0.30,
+            center.y + dy as f32 * len * 0.44 + py as f32 * arm * 0.30,
+        );
+        let b2 = Pos2::new(
+            center.x + dx as f32 * len * 0.44 - px as f32 * arm * 0.30,
+            center.y + dy as f32 * len * 0.44 - py as f32 * arm * 0.30,
+        );
+        painter.add(egui::Shape::convex_polygon(
+            vec![tip, b1, b2],
+            BACKDROP,
+            Stroke::NONE,
+        ));
     }
 }
 
@@ -606,14 +706,35 @@ fn draw_face_button(
             if pressed || mapped { ACCENT } else { BORDER },
         ),
     );
-    let colour = if pressed {
+    if pressed {
+        // Pressed reads deeper: a darker inner ring and the glyph nudged down
+        // are the two cues that the button is inside its well rather than
+        // level with it.
+        painter.circle_stroke(
+            center,
+            r - 1.0,
+            Stroke::new(1.0, Color32::from_black_alpha(45)),
+        );
+        face.draw(
+            painter,
+            center + Vec2::new(0.0, r * 0.10),
+            r,
+            colour_for(pressed, mapped, idle),
+        );
+    } else {
+        face.draw(painter, center, r, colour_for(pressed, mapped, idle));
+    }
+}
+
+/// The glyph colour: bright on the lit button, dim otherwise.
+fn colour_for(pressed: bool, mapped: bool, idle: Color32) -> Color32 {
+    if pressed {
         BACKDROP
     } else if mapped {
         ACCENT
     } else {
         idle
-    };
-    face.draw(painter, center, r, colour);
+    }
 }
 
 /// A trigger bar showing both analog pressure and its digital state.
@@ -626,13 +747,29 @@ fn draw_pill(
     value: f32,
     pressed: bool,
 ) {
-    let rect = Rect::from_center_size(center, Vec2::new(w, h));
+    // A pressed trigger drops into its body — a pill that changes colour but
+    // not position looks like an indicator, not like a plunger.
+    let rect = if pressed {
+        Rect::from_center_size(center + Vec2::new(0.0, 1.5), Vec2::new(w, h))
+    } else {
+        Rect::from_center_size(center, Vec2::new(w, h))
+    };
     painter.rect_filled(rect, RADIUS_PILL, SURFACE);
     painter.rect_stroke(
         rect,
         RADIUS_PILL,
         Stroke::new(1.0, BORDER),
         egui::StrokeKind::Middle,
+    );
+    // The top hairline: an edge worth catching light on, since the analog
+    // fill below is what the eye tracks.
+    painter.rect_filled(
+        Rect::from_min_max(
+            Pos2::new(rect.min.x + 3.0, rect.min.y),
+            Pos2::new(rect.max.x - 3.0, rect.min.y + 1.0),
+        ),
+        RADIUS_PILL,
+        Color32::from_white_alpha(24),
     );
 
     // Fill from the centre outwards.
@@ -648,7 +785,7 @@ fn draw_pill(
         painter.rect_filled(bar, RADIUS_PILL, colour);
     }
     painter.text(
-        center,
+        rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
         FontId::proportional(9.0),
@@ -1139,11 +1276,13 @@ pub fn response_curve(
 /// Drawn rather than reduced to a number because the thing being tuned on the
 /// racing page is a feel, and the fastest way to check a feel is to watch the
 /// wheel return to centre the way a car would.
-pub fn steering_wheel(ui: &mut egui::Ui, angle: f32, size: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(size, size), Sense::hover());
+pub fn steering_wheel(ui: &mut egui::Ui, angle: f32, size: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(size, size), Sense::hover());
     let painter = ui.painter_at(rect);
     let c = rect.center();
-    let r = (size * 0.5 - 6.0).max(10.0);
+    // A finger narrower than the box: the dial that reads the angle back lives
+    // just outside the rim, and a rim that fills the box leaves it nowhere.
+    let r = (size * 0.5 - 14.0).max(10.0);
     // A stick reaches full lock at ninety degrees either way, so the whole
     // travel is half a turn. That is what makes a quick correction look quick.
     let a = angle.clamp(-1.0, 1.0).to_radians() * 90.0;
@@ -1151,10 +1290,22 @@ pub fn steering_wheel(ui: &mut egui::Ui, angle: f32, size: f32) {
     // Rotate a point from wheel space into screen space.
     let at = |x: f32, y: f32| Pos2::new(c.x + x * cos - y * sin, c.y + x * sin + y * cos);
 
-    glow(&painter, c, r * 1.6, ACCENT);
+    glow(&painter, c, r * 1.5, ACCENT);
+
+    // The face: a faint dish behind the spokes, so the wheel has a plane
+    // between its rim and its hub rather than spokes hanging in space.
+    painter.circle_stroke(c, r * 0.60, Stroke::new(1.0, SHELL_SHADE));
 
     // The rim is a bar rather than a ring: a ring looks the same whichever way
     // it is turned, which is the one thing this has to show.
+    //
+    // Rounded ends first, under the strokes: without them the rim ends in a
+    // chisel, and a wheel's grip section is a tube, not a cut plank.
+    for sign in [-1.0f32, 1.0] {
+        let end = at(sign * r, 0.0);
+        painter.circle_filled(end, 6.0, SHELL_SHADE);
+        painter.circle_filled(end, 4.25, SHELL);
+    }
     //
     // Drawn as a stack of three strokes rather than one. A single flat stroke
     // is a line, and a line is not an object. The dark underlay and the lit
@@ -1177,10 +1328,12 @@ pub fn steering_wheel(ui: &mut egui::Ui, angle: f32, size: f32) {
     }
 
     // Spokes: a dark underlay and a lit edge, like the rim, so the whole wheel
-    // is built from one rule rather than each part having its own.
+    // is built from one rule rather than each part having its own. They run
+    // from the rim into the hub's disc, which the hub is drawn after and
+    // covers -- a spoke that stops just short of its hub is not attached.
     for (from, to) in [
-        ((-r * 0.66, 0.0), (-r * 0.26, r * 0.66)),
-        ((r * 0.66, 0.0), (r * 0.26, r * 0.66)),
+        ((-r * 0.66, 0.0), (-r * 0.17, r * 0.15)),
+        ((r * 0.66, 0.0), (r * 0.17, r * 0.15)),
     ] {
         painter.line_segment(
             [at(from.0, from.1), at(to.0, to.1)],
@@ -1192,15 +1345,52 @@ pub fn steering_wheel(ui: &mut egui::Ui, angle: f32, size: f32) {
         );
     }
 
-    // Hub, shaded the same way, with an accent pin at its centre.
+    // Hub, shaded the same way, with an accent pin at its centre and a light
+    // spot on it, same as every other rounded part here.
     painter.circle_filled(c, r * 0.27, SHELL_SHADE);
     painter.circle_filled(c, r * 0.23, SHELL);
+    painter.circle_filled(
+        c - Vec2::new(r * 0.07, r * 0.08),
+        r * 0.09,
+        Color32::from_white_alpha(14),
+    );
     painter.circle_stroke(c, r * 0.23, Stroke::new(1.5, ACCENT.gamma_multiply(0.75)));
     painter.circle_filled(c, r * 0.07, ACCENT);
 
     // Straight ahead, marked, so centre is a position rather than a guess.
     painter.line_segment([at(0.0, -r), at(0.0, -r + 7.0)], Stroke::new(3.0, ACCENT));
     painter.circle_filled(at(0.0, -r + 3.0), 2.5, ACCENT);
+
+    // The dial below reads the angle back at the scale the header's degrees
+    // use. The rim already says *that* it is turned; this says *how much*,
+    // against ticks rather than against however far the wheel looks turned.
+    let steer = angle.clamp(-1.0, 1.0);
+    let gauge_r = r + 7.0;
+    for tick in [-1.0f32, -0.5, 0.0, 0.5, 1.0] {
+        // 0 is a quarter-turn down; ±1 is 45 degrees past it toward the side
+        // the stick is pointing. Screen angles: 90° points down.
+        let t = (90.0 - tick * 45.0).to_radians();
+        let (ct, st) = (t.cos(), t.sin());
+        let centre = tick == 0.0;
+        let from = gauge_r - if centre { 3.0 } else { 1.5 };
+        let to = gauge_r + if centre { 5.0 } else { 4.0 };
+        painter.line_segment(
+            [
+                Pos2::new(c.x + ct * from, c.y + st * from),
+                Pos2::new(c.x + ct * to, c.y + st * to),
+            ],
+            Stroke::new(
+                if centre { 2.0 } else { 1.0 },
+                if centre { SHELL_EDGE } else { BORDER },
+            ),
+        );
+    }
+    let m = (90.0 - steer * 45.0).to_radians();
+    let marker = Pos2::new(c.x + m.cos() * gauge_r, c.y + m.sin() * gauge_r);
+    glow(&painter, marker, 8.0, ACCENT);
+    painter.circle_filled(marker, 3.0, ACCENT);
+
+    response
 }
 
 /// A preset chip: one shape, one click, rounded like the status pills so the
@@ -1679,6 +1869,72 @@ mod tests {
             (h2 - 0.85).abs() < 0.05,
             "a release outside the strip undid the sweep: hue is {h2:.3}"
         );
+    }
+
+    /// A draw that keeps its shapes, so a widget's painting can be scanned:
+    /// colour-and-geometry questions ("where did the marker land?") are
+    /// answered against what was actually painted, not against a second copy
+    /// of the maths that painted it.
+    fn pass_shapes(
+        ctx: &egui::Context,
+        input: &RawInput,
+        draw: impl FnMut(&mut egui::Ui),
+    ) -> Vec<egui::epaint::ClippedShape> {
+        let mut out = ctx.run_ui(input.clone(), draw);
+        // The pass's font-atlas delta has no renderer here; clear it, like
+        // every other headless pass in this file.
+        out.textures_delta.clear();
+        out.shapes
+    }
+
+    /// The wheel's angle dial: the bottom-most accent point is the live
+    /// marker, and it must sit on the side the stick points to — full lock
+    /// right lands right of centre, full lock left left of it, and centre is
+    /// centre. The header prints degrees; the drawing has to agree with the
+    /// number rather than with however far the wheel happens to look turned.
+    #[test]
+    fn the_wheel_marker_tracks_the_steer_angle() {
+        let ctx = egui::Context::default();
+        for angle in [-1.0f32, 0.0, 1.0] {
+            let wheel_centre = std::cell::Cell::new(pos2(-1.0, -1.0));
+            let mut shapes = Vec::new();
+            for _ in 0..2 {
+                shapes = pass_shapes(&ctx, &input(vec2(140.0, 140.0), vec![]), |ui| {
+                    let response = steering_wheel(ui, angle, 116.0);
+                    wheel_centre.set(response.rect.center());
+                });
+            }
+            let c = wheel_centre.get();
+            // Three solid accent dots in a wheel: the hub pin, the
+            // straight-ahead tick's dot, and the dial's live marker. The
+            // glows are alpha-mixed and never equal the pure accent, so they
+            // do not count.
+            let mut accent_dots: Vec<egui::Pos2> = shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Circle(circle)
+                        if circle.fill == ACCENT && circle.radius <= 4.0 =>
+                    {
+                        Some(circle.center)
+                    }
+                    _ => None,
+                })
+                .collect();
+            accent_dots.sort_by(|a, b| b.y.total_cmp(&a.y));
+            assert_eq!(
+                accent_dots.len(),
+                3,
+                "expected hub pin, north dot and dial marker, got {accent_dots:?}"
+            );
+            let marker = accent_dots[0];
+            let dx = marker.x - c.x;
+            let (ok, why) = match angle {
+                x if x > 0.5 => (dx > 10.0, "full lock right put the marker left of centre"),
+                x if x < -0.5 => (dx < -10.0, "full lock left put the marker right of centre"),
+                _ => (dx.abs() < 2.0, "a centred stick left the marker off centre"),
+            };
+            assert!(ok, "{why} (dx = {dx:.1})");
+        }
     }
 
     /// Click on the switch flips it, a click elsewhere does not. The second
