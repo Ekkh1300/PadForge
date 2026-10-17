@@ -27,7 +27,7 @@ pub fn panic_was_dumped() -> bool {
     PANIC_DUMPED.load(Ordering::Relaxed)
 }
 
-use padcore::engine::{self, EngineHandle};
+use padcore::engine;
 use padcore::profile::ProfileStore;
 use padcore::settings::Settings;
 
@@ -35,7 +35,7 @@ use egui::{IconData, ViewportBuilder};
 
 use app::App;
 use state::AppState;
-use tray::{TrayCommand, TrayInbox};
+use tray::TrayInbox;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -309,21 +309,4 @@ fn timestamp() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-/// Drain tray commands and route them to the engine or the UI.
-pub fn service_tray(inbox: &TrayInbox, engine: &EngineHandle, state: &mut AppState) {
-    let commands: Vec<TrayCommand> = match inbox.lock() {
-        Ok(mut v) => std::mem::take(&mut *v),
-        Err(_) => return,
-    };
-    for cmd in commands {
-        match cmd {
-            TrayCommand::Show => state.restore_requested = true,
-            TrayCommand::Quit => state.quit = true,
-            other => {
-                tray::apply(other, engine);
-            }
-        }
-    }
 }

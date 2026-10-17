@@ -1215,6 +1215,157 @@ pub fn preset_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     )
 }
 
+/// An on/off switch, drawn rather than a ticked box.
+///
+/// For booleans that are *settings* — intended to persist and be reflected
+/// elsewhere, which a ticked box does not say as directly as a pill sitting on
+/// one of two states. The dense inline option rows on the racing and controller
+/// pages keep their checkboxes deliberately: those read as compact options, and
+/// a switch of this width inside them would push everything else out.
+///
+/// Click and keyboard (Space while focused) both flip it, like egui's checkbox.
+///
+/// `Sense::click`, not a bare `hover`: in egui 0.36 the click sense already
+/// carries focusability, so keyboard activation needs no separate
+/// constructor, and the response reports `clicked()` exactly like a button.
+pub fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let size = Vec2::new(36.0, 20.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    let clicked = response.clicked()
+        || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Space)));
+    if clicked {
+        *on = !*on;
+        response.mark_changed();
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Checkbox,
+            ui.is_enabled(),
+            *on,
+            if *on { "on" } else { "off" },
+        )
+    });
+
+    let painter = ui.painter_at(rect);
+
+    // Track: recessed and dark when off, accent when on, a shade lighter under
+    // the pointer so it never needs guessing that it is a control. The stroke
+    // is what keeps the off state from melting into the card it sits on —
+    // `TRACK` under `SURFACE_RAISED` is the groove pairing from the sliders.
+    let track = if *on {
+        ACCENT
+    } else if response.hovered() {
+        SURFACE_HOVER
+    } else {
+        TRACK
+    };
+    painter.rect_filled(rect, RADIUS_PILL, track);
+    painter.rect_stroke(
+        rect,
+        RADIUS_PILL,
+        Stroke::new(1.0, if *on { ACCENT } else { BORDER }),
+        egui::StrokeKind::Middle,
+    );
+
+    // Knob at whichever end of its travel the state names.
+    let inset = size.y * 0.14;
+    let knob_r = size.y * 0.5 - inset;
+    let knob_pos = if *on {
+        Pos2::new(rect.right() - inset - knob_r, rect.center().y)
+    } else {
+        Pos2::new(rect.left() + inset + knob_r, rect.center().y)
+    };
+    if *on {
+        glow(&painter, knob_pos, knob_r * 2.0, ACCENT);
+    }
+    // Dark on the accent when on; light when off, on the dark track. Either
+    // way the knob is the highest-contrast thing in the widget, which is what
+    // makes the state readable before the shape is.
+    painter.circle_filled(knob_pos, knob_r, if *on { BACKDROP } else { TEXT });
+    painter.circle_stroke(
+        knob_pos,
+        knob_r,
+        Stroke::new(1.0, if *on { BACKDROP } else { BORDER }),
+    );
+
+    response
+}
+
+/// The header's pause / resume control: an icon, not "||||" typed into a
+/// string.
+///
+/// The previous version set the Button's text to four vertical bars or a
+/// greater-than, which is exactly what it looks like too — throughput dragged
+/// through a font glyph set that has none of the shapes this button means.
+/// Drawn here, the two states are distinguishable at a glance and the colour
+/// logic stays in one place.
+pub fn pause_play(ui: &mut egui::Ui, paused: bool) -> egui::Response {
+    let size = Vec2::new(34.0, 28.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    let toggled = response.clicked()
+        || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Space)));
+    if toggled {
+        // The caller decides what "toggled" means; we only pass on that a
+        // deliberate activation happened. Mirroring the contract of a plain
+        // Button's `clicked()` keeps the call site unchanged in shape.
+        response.mark_changed();
+    }
+
+    let painter = ui.painter_at(rect);
+
+    // Paused reads as a warning state (the pad is not passing through), which
+    // is the colour rule the text version already had.
+    let (fill, edge, icon) = if paused {
+        (WARNING, WARNING, BACKDROP)
+    } else if response.hovered() {
+        (SURFACE_HOVER, ACCENT_DIM, TEXT)
+    } else {
+        (SURFACE_RAISED, BORDER, TEXT)
+    };
+    painter.rect_filled(rect, RADIUS_MD, fill);
+    painter.rect_stroke(
+        rect,
+        RADIUS_MD,
+        Stroke::new(1.0, edge),
+        egui::StrokeKind::Middle,
+    );
+
+    let c = rect.center();
+    // A hair bigger under the pointer: live feedback that costs nothing.
+    let slack = if response.hovered() { 0.6 } else { 0.0 };
+
+    if paused {
+        // Play: one triangle, filled, pointing right — the only glyph a
+        // triangle is unambiguous as. Slightly taller than wide, as optically
+        // corrective rather than geometrically exact.
+        let w = 9.0;
+        let h = 11.0;
+        let points = vec![
+            Pos2::new(c.x - w * 0.4, c.y - h * 0.62),
+            Pos2::new(c.x - w * 0.4, c.y + h * 0.62),
+            Pos2::new(c.x + w * 0.64, c.y),
+        ];
+        painter.add(egui::Shape::convex_polygon(points, icon, Stroke::NONE));
+    } else {
+        // Pause: two bars.
+        let bar = Vec2::new(3.2, 11.0 + slack);
+        painter.rect_filled(
+            Rect::from_center_size(Pos2::new(c.x - 3.4, c.y), bar),
+            RADIUS_SM,
+            icon,
+        );
+        painter.rect_filled(
+            Rect::from_center_size(Pos2::new(c.x + 3.4, c.y), bar),
+            RADIUS_SM,
+            icon,
+        );
+    }
+
+    response
+}
+
 /// An HSV colour picker, since egui has no built-in one.
 pub struct ColourPicker {
     /// Hue 0..=1, saturation 0..=1, value 0..=1.
@@ -1253,7 +1404,13 @@ impl ColourPicker {
                 Color32::from_rgb(c[0], c[1], c[2]),
             );
         }
-        if response.clicked() {
+        // Held down anywhere on the strip, whether or not the pointer has
+        // moved since it landed — because `clicked` alone fires on release, a
+        // press-and-sweep did nothing until the finger came back up, and
+        // releasing inside a two-pixel strip is not how anyone picks a hue.
+        // The same rule governs the square below.
+        let pressing = response.is_pointer_button_down_on();
+        if pressing {
             if let Some(p) = response.interact_pointer_pos() {
                 let t = ((p.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
                 self.hsv[0] = t;
@@ -1270,7 +1427,6 @@ impl ColourPicker {
             Sense::click_and_drag(),
         );
         let sq_painter = ui.painter_at(sq_rect);
-        let hx_colour = padcore::profile::hsv_to_rgb(self.hsv[0], 1.0, 1.0);
         // Horizontal = saturation, vertical = value (inverted, brighter at top).
         for ix in 0..24 {
             for iy in 0..16 {
@@ -1288,8 +1444,7 @@ impl ColourPicker {
                 );
             }
         }
-        let _ = hx_colour;
-        if sq_resp.clicked() {
+        if sq_resp.is_pointer_button_down_on() {
             if let Some(p) = sq_resp.interact_pointer_pos() {
                 self.hsv[1] = ((p.x - sq_rect.min.x) / sq_rect.width()).clamp(0.0, 1.0);
                 self.hsv[2] = (1.0 - (p.y - sq_rect.min.y) / sq_rect.height()).clamp(0.0, 1.0);
@@ -1309,28 +1464,31 @@ impl ColourPicker {
 
         ui.add_space(SPACE_SM);
 
-        // Swatch preview plus a hex readout.
-        let (swatch_rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), Sense::hover());
-        ui.painter().rect_filled(
-            swatch_rect,
-            RADIUS_SM,
-            Color32::from_rgb(current[0], current[1], current[2]),
-        );
-        ui.painter().rect_stroke(
-            swatch_rect,
-            RADIUS_SM,
-            Stroke::new(1.0, BORDER),
-            egui::StrokeKind::Middle,
-        );
-        ui.add_space(SPACE_SM);
-        ui.label(
-            egui::RichText::new(format!(
-                "#{:02X}{:02X}{:02X}",
-                current[0], current[1], current[2]
-            ))
-            .color(TEXT_MUTED)
-            .monospace(),
-        );
+        // Swatch preview next to its hex readout, on one row. The swatch used
+        // to sit alone on a line of its own above the number, which read as
+        // two unrelated facts rather than one colour and its name.
+        ui.horizontal(|ui| {
+            let (swatch_rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), Sense::hover());
+            ui.painter_at(swatch_rect).rect_filled(
+                swatch_rect,
+                RADIUS_SM,
+                Color32::from_rgb(current[0], current[1], current[2]),
+            );
+            ui.painter_at(swatch_rect).rect_stroke(
+                swatch_rect,
+                RADIUS_SM,
+                Stroke::new(1.0, BORDER),
+                egui::StrokeKind::Middle,
+            );
+            ui.label(
+                egui::RichText::new(format!(
+                    "#{:02X}{:02X}{:02X}",
+                    current[0], current[1], current[2]
+                ))
+                .color(TEXT_MUTED)
+                .monospace(),
+            );
+        });
     }
 }
 
@@ -1364,6 +1522,40 @@ pub fn rgb_to_hsv(rgb: [u8; 3]) -> (f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::{pos2, vec2, RawInput, Rect};
+
+    /// One headless egui pass. The font-atlas delta each pass produces has no
+    /// renderer to receive it here, so it is cleared before the pass is
+    /// dropped — epaint asserts on unapplied deltas and the assert is right.
+    fn pass(ctx: &egui::Context, input: &RawInput, draw: impl FnMut(&mut egui::Ui)) {
+        let mut out = ctx.run_ui(input.clone(), draw);
+        out.textures_delta.clear();
+    }
+
+    fn input(size: egui::Vec2, events: Vec<egui::Event>) -> RawInput {
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), size)),
+            events,
+            ..RawInput::default()
+        }
+    }
+
+    fn click(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ]
+    }
 
     #[test]
     fn hsv_round_trips_through_rgb() {
@@ -1391,5 +1583,167 @@ mod tests {
     fn picker_starts_from_a_colour() {
         let p = ColourPicker::new([0x35, 0xD0, 0xE8]);
         assert_eq!(p.rgb(), [0x35, 0xD0, 0xE8]);
+    }
+
+    /// A press-and-sweep on the picker must move the colour as the pointer
+    /// moves, not only when the finger comes back up — and a release that ends
+    /// off the strip must not undo the sweep that happened under it.
+    ///
+    /// The first version of the picker answered `clicked` only. `clicked`
+    /// fires on release, so the natural gesture (press, sweep, let go) applied
+    /// the hue from the *release point, if the release landed inside the strip;
+    /// a release that drifted even a pixel outside it applied nothing at all.
+    /// A click at 15% of the hue strip, a sweep to 85%, and a release outside
+    /// the strip says which behaviour is running: the value here ends at 85%
+    /// now, and used to end at 0 (the starting hue, red), because neither the
+    /// press nor the sweep had counted.
+    #[test]
+    fn dragging_the_picker_moves_the_colour_even_off_the_strip() {
+        let ctx = egui::Context::default();
+        let hsv = std::cell::Cell::new([0.0f32, 1.0, 1.0]);
+        let strip = std::cell::Cell::new(Rect::NOTHING);
+
+        let size = vec2(240.0, 300.0);
+        // Warm the layout so the strip's position is stable, then ask again
+        // for the same geometry and note where the strip sits.
+        pass(&ctx, &input(size, vec![]), |ui| {
+            let top = ui.cursor().top();
+            let left = ui.min_rect().left();
+            let w = ui.available_width();
+            strip.set(Rect::from_min_size(pos2(left, top), vec2(w, 18.0)));
+            let mut picker = ColourPicker { hsv: hsv.get() };
+            picker.show(ui);
+            hsv.set(picker.hsv);
+        });
+        pass(&ctx, &input(size, vec![]), |ui| {
+            let mut picker = ColourPicker { hsv: hsv.get() };
+            picker.show(ui);
+            hsv.set(picker.hsv);
+        });
+
+        let s = strip.get();
+        assert!(
+            s.height() >= 17.0,
+            "the hue strip is where it is drawn, got {s:?}"
+        );
+
+        // A real drag is not one event: the press settles in one pass, the
+        // sweep is felt while the button is still down, and the release comes
+        // later — possibly outside the strip. Committed as separate passes
+        // because a single pass containing press+move+release hands egui a
+        // pointer that is already up by the time anything renders, which is
+        // not how a human drags.
+        //
+        // The middle pass is the one that counts: the hue must follow the
+        // sweep *while the pointer is down*. The first version of the picker
+        // only answered `clicked`, which fires on release — so nothing here
+        // would move it, and the release below, landing outside the strip,
+        // would not either. The value would have stayed at the starting red.
+        let down = pos2(s.left() + s.width() * 0.15, s.center().y);
+        let sweep = pos2(s.left() + s.width() * 0.85, s.center().y);
+        let release = pos2(s.center().x, s.bottom() + 80.0);
+        let press_and_sweep = vec![
+            egui::Event::PointerButton {
+                pos: down,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerMoved(sweep),
+        ];
+        pass(&ctx, &input(size, press_and_sweep), |ui| {
+            let mut picker = ColourPicker { hsv: hsv.get() };
+            picker.show(ui);
+            hsv.set(picker.hsv);
+        });
+
+        let [h, _s, _v] = hsv.get();
+        assert!(
+            (h - 0.85).abs() < 0.05,
+            "a press-and-sweep left the hue at {h:.3}, expected about 0.85"
+        );
+
+        let release_events = vec![egui::Event::PointerButton {
+            pos: release,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        }];
+        pass(&ctx, &input(size, release_events), |ui| {
+            let mut picker = ColourPicker { hsv: hsv.get() };
+            picker.show(ui);
+            hsv.set(picker.hsv);
+        });
+        let [h2, _s2, _v2] = hsv.get();
+        assert!(
+            (h2 - 0.85).abs() < 0.05,
+            "a release outside the strip undid the sweep: hue is {h2:.3}"
+        );
+    }
+
+    /// Click on the switch flips it, a click elsewhere does not. The second
+    /// half is what the previous checkbox-free layout could not say: that a
+    /// row's label click does not reach its neighbour's control.
+    #[test]
+    fn a_click_flips_the_switch_and_a_miss_does_not() {
+        let ctx = egui::Context::default();
+        let on = std::cell::Cell::new(false);
+        let centre = std::cell::Cell::new(pos2(-1.0, -1.0));
+
+        for _ in 0..2 {
+            pass(&ctx, &input(vec2(200.0, 80.0), vec![]), |ui| {
+                let mut v = on.get();
+                let r = toggle_switch(ui, &mut v);
+                on.set(v);
+                centre.set(r.rect.center());
+            });
+        }
+
+        assert!(!on.get(), "drawing alone must not toggle the switch");
+        pass(&ctx, &input(vec2(200.0, 80.0), click(centre.get())), |ui| {
+            let mut v = on.get();
+            toggle_switch(ui, &mut v);
+            on.set(v);
+        });
+        assert!(on.get(), "clicking the switch toggles it");
+
+        pass(
+            &ctx,
+            &input(vec2(200.0, 80.0), click(pos2(180.0, 60.0))),
+            |ui| {
+                let mut v = on.get();
+                toggle_switch(ui, &mut v);
+                on.set(v);
+            },
+        );
+        assert!(on.get(), "a click that lands elsewhere must not toggle it");
+    }
+
+    /// The header control only has to report that it was activated; the app
+    /// decides what pause means. Expressed this way, the icon redraw and the
+    /// semantics stay testable without a window.
+    #[test]
+    fn the_pause_control_reports_activation_on_click() {
+        let ctx = egui::Context::default();
+        let activated = std::cell::Cell::new(false);
+        let centre = std::cell::Cell::new(pos2(-1.0, -1.0));
+
+        for _ in 0..2 {
+            pass(&ctx, &input(vec2(200.0, 80.0), vec![]), |ui| {
+                let r = pause_play(ui, false);
+                centre.set(r.rect.center());
+                activated.set(r.changed());
+            });
+        }
+        assert!(
+            !activated.get(),
+            "drawing the control alone must not activate it"
+        );
+
+        pass(&ctx, &input(vec2(200.0, 80.0), click(centre.get())), |ui| {
+            let r = pause_play(ui, false);
+            activated.set(r.changed());
+        });
+        assert!(activated.get(), "clicking the control activates it");
     }
 }

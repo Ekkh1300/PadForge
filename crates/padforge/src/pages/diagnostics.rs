@@ -65,12 +65,10 @@ pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
 
     // The hex dump and the decoded fields, side by side. That adjacency is the
     // whole point of the page.
-    let free = ui.available_width() - ui.spacing().item_spacing.x;
     ui.columns(2, |cols| {
         raw_dump(&mut cols[0], &telemetry);
         decoded(&mut cols[1], &telemetry);
     });
-    let _ = free;
 
     ui.add_space(SPACE_MD);
     layout_note(ui, &telemetry);

@@ -276,7 +276,7 @@ fn lightbar_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::T
         let mut expanded = ctx.state.show_lightbar;
 
         ui.horizontal(|ui| {
-            ui.checkbox(&mut enabled, "");
+            widgets::toggle_switch(ui, &mut enabled);
             ui.label(RichText::new("Lightbar").color(TEXT).size(14.0).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui

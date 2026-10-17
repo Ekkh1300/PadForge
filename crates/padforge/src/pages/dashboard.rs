@@ -3,7 +3,7 @@ use crate::state::{Page, ToastLevel};
 use crate::theme::*;
 use crate::widgets::{self, PadPreview};
 use egui::epaint::MarginF32;
-use egui::{Align2, FontId, RichText, Stroke, Vec2};
+use egui::{RichText, Stroke, Vec2};
 use padcore::engine::EngineCommand;
 
 #[allow(clippy::too_many_lines)]
@@ -82,15 +82,15 @@ fn controls(
         ui.add_space(SPACE_SM);
         ui.horizontal(|ui| {
             if t.paused {
-                if primary_button(ui, ">  Resume").clicked() {
+                if primary_button(ui, "Resume").clicked() {
                     ctx.engine.send(EngineCommand::TogglePause);
                     ctx.state.toast("Output resumed", ToastLevel::Success);
                 }
-            } else if primary_button(ui, "||||  Pause").clicked() {
+            } else if primary_button(ui, "Pause").clicked() {
                 ctx.engine.send(EngineCommand::TogglePause);
                 ctx.state.toast("Output paused", ToastLevel::Warning);
             }
-            if secondary_button(ui, "~  Recalibrate").clicked() {
+            if secondary_button(ui, "Recalibrate").clicked() {
                 ctx.engine.send(EngineCommand::Recalibrate);
                 ctx.state
                     .toast("Hold the sticks still...", ToastLevel::Info);
@@ -404,7 +404,7 @@ pub fn push_store(ctx: &mut super::Ctx) {
     ctx.engine
         .send(EngineCommand::ApplyProfiles(Box::new(store)));
 }
-/// A centred logo lockup, shown on the dashboard header.
+/// The mark in the window header: two interlocking rings, a pad and a bridge.
 pub fn logo(ui: &mut egui::Ui, accent: egui::Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
@@ -414,12 +414,5 @@ pub fn logo(ui: &mut egui::Ui, accent: egui::Color32) {
         rect.center(),
         5.0,
         Stroke::new(2.0, accent.gamma_multiply(0.6)),
-    );
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        "",
-        FontId::proportional(1.0),
-        accent,
     );
 }

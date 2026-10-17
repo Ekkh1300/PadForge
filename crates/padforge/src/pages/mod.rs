@@ -11,6 +11,10 @@ pub mod racing;
 pub mod settings;
 pub mod test;
 
+/// Headless page rendering, for the pages' own layout tests.
+#[cfg(test)]
+pub(crate) mod testing;
+
 use padcore::engine::EngineHandle;
 
 use crate::state::AppState;

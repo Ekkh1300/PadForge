@@ -25,7 +25,7 @@ fn gyro_card(ui: &mut egui::Ui, ctx: &mut super::Ctx, t: &padcore::engine::Telem
         let mut enabled = ctx.state.gyro.enabled;
 
         ui.horizontal(|ui| {
-            ui.checkbox(&mut enabled, "");
+            widgets::toggle_switch(ui, &mut enabled);
             ui.label(RichText::new("Gyro aiming").color(TEXT).size(15.0).strong());
         });
 

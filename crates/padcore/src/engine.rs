@@ -301,6 +301,24 @@ impl EngineHandle {
 /// How many samples of gyro output the UI keeps for its trace.
 pub const HISTORY_LEN: usize = 140;
 
+impl EngineHandle {
+    /// A handle with no engine behind it, for tests.
+    ///
+    /// `spawn` reads devices, starts threads and opens XInput; a test that
+    /// only wants to lay a page out must not ask a test runner for any of
+    /// that. Telemetry reads as defaults — "no pad connected" — events never
+    /// fire, and commands raced into the channel are dropped where the other
+    /// end has already left.
+    pub fn headless() -> Self {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        Self {
+            tx,
+            telemetry: Arc::new(Mutex::new(Telemetry::default())),
+            events: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
 pub fn spawn(initial: Settings, store: ProfileStore) -> EngineHandle {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<EngineCommand>();
     // Bounded so a stalled UI drops telemetry rather than growing unbounded.

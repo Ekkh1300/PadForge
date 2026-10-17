@@ -2,9 +2,23 @@
 //! own card.
 use crate::state::ToastLevel;
 use crate::theme::*;
+use crate::widgets::toggle_switch;
 use egui::{RichText, Stroke};
 use padcore::engine::EngineCommand;
 use padcore::hotkey::{HotkeyAction, HotkeyBinding, Mods};
+
+/// Labels get their own size and weight, so a switch's neighbouring text
+/// cannot drift off the checkbox sizing it replaced.
+///
+/// Returns true when the switch moved, so the caller can push the setting.
+fn toggle_row(ui: &mut egui::Ui, on: &mut bool, label: &str) -> bool {
+    ui.horizontal(|ui| {
+        let moved = toggle_switch(ui, on);
+        ui.label(RichText::new(label).color(TEXT).size(13.0));
+        moved.changed()
+    })
+    .inner
+}
 
 #[allow(clippy::too_many_lines)]
 pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
@@ -15,65 +29,50 @@ pub fn draw(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
     } else {
         Vec::new()
     };
+    ui.set_max_width(ui.available_width());
     settings_grid(ui, ctx, &keys);
 }
 
-/// The four cards, as two rows of two.
+/// The four cards, as two rows of two, made of two plain `ui.columns` calls.
 ///
-/// Two `ui.columns` calls back to back is what this used to be, and it put the
-/// second row about 500 px below the first: `columns` fills its columns to the
-/// height of the tallest card and returns, so the next call starts wherever
-/// that pair happened to end rather than where the other pair started.
-///
-/// Both rows are therefore measured before either is drawn. egui does not
-/// report a card's height before drawing it, so each row's height is its
-/// available height and the rows are placed at the top of that -- which lines
-/// them up and lets the page scroll if either row is taller than the window.
+/// The middle of the page's history did not believe two back-to-back calls
+/// could sit tight — it reserved the viewport's spare height for the first
+/// row to force the alignment instead, which traded one wrong number for
+/// another: the row gap came to track the window height, not the spacing. On
+/// egui 0.36 the original assumption is simply false, as egui's `columns`
+/// advance the cursor past the tallest card actually drawn, so the plain pair
+/// is what is here, and the render test beside the page proves the claim
+/// rather than restating it.
 ///
 /// Four cards in one row was tried instead and is the wrong shape at this
 /// width: the cards come out narrower than the text inside them, and the
 /// fourth one ends up under the scrollbar.
 fn settings_grid(ui: &mut egui::Ui, ctx: &mut super::Ctx, keys: &[egui::Event]) {
-    const ROWS: usize = 2;
+    // One spacing pair governs everything: card to card inside a row, and row
+    // to row below it.
     let gap = SPACE_MD;
-    let scroll = ui.style().spacing.scroll;
-    let free = ui.available_width() - scroll.bar_width - scroll.floating_allocated_width;
-    let row_h = ui.available_height();
+    let spacing = ui.spacing().item_spacing;
+    ui.spacing_mut().item_spacing.x = gap;
+    ui.spacing_mut().item_spacing.y = gap;
 
-    for row in 0..ROWS {
-        let top = ui.cursor().top();
-        let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(free, if row == 0 { row_h } else { 0.0 }),
-            egui::Sense::hover(),
-        );
-        let _ = rect;
-        let spacing = ui.spacing().item_spacing;
-        ui.spacing_mut().item_spacing.x = gap;
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(egui::Rect::from_min_size(
-                    egui::pos2(ui.cursor().left(), top),
-                    egui::vec2(free, row_h),
-                ))
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-            |ui| {
-                ui.columns(2, |cols| match row {
-                    0 => {
-                        general(&mut cols[0], ctx);
-                        auto_profiles(&mut cols[1], ctx);
-                    }
-                    _ => {
-                        hotkeys(&mut cols[0], ctx, keys);
-                        diagnostics(&mut cols[1], ctx);
-                    }
-                });
-            },
-        );
-        ui.spacing_mut().item_spacing = spacing;
-        if row + 1 < ROWS {
-            ui.allocate_space(egui::vec2(0.0, gap));
-        }
-    }
+    // egui 0.36's `columns` shrink-wraps: after each call the cursor sits at
+    // the tallest card of that row, so two plain calls stack the rows edge to
+    // edge. What this replaced reserved the viewport's *spare* height for the
+    // first row, which made the gap between the rows track the window height
+    // instead of the spacing: 17px spare on a 700px-tall window was invisible,
+    // and the same layout on a taller one spaced the rows by the leftover
+    // room. The render test beside the page pins the gap to the horizontal
+    // one so a regression reads as numbers, not vibes.
+    ui.columns(2, |cols| {
+        general(&mut cols[0], ctx);
+        auto_profiles(&mut cols[1], ctx);
+    });
+    ui.columns(2, |cols| {
+        hotkeys(&mut cols[0], ctx, keys);
+        diagnostics(&mut cols[1], ctx);
+    });
+
+    ui.spacing_mut().item_spacing = spacing;
 }
 /// Window behaviour and general preferences.
 fn general(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
@@ -83,24 +82,37 @@ fn general(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         // Scoped so the settings borrow ends before the autostart row, which
         // reads the registry rather than the settings struct, needs `ctx` again.
         {
-            let s = &mut ctx.state.settings;
-            ui.checkbox(
-                &mut s.minimize_on_close,
-                "Keep running when the window is closed",
-            );
-            ui.label(
-                RichText::new(
-                    "PadForge stays in the notification area so a game keeps receiving input.",
-                )
-                .color(TEXT_FAINT)
-                .size(11.5),
-            );
-            ui.add_space(SPACE_SM);
-            ui.checkbox(&mut s.start_minimized, "Start hidden in the tray");
-            ui.checkbox(
-                &mut s.auto_reapply_profile,
-                "Re-apply the profile on reconnect",
-            );
+            let mut changed = false;
+            {
+                let s = &mut ctx.state.settings;
+                changed |= toggle_row(
+                    ui,
+                    &mut s.minimize_on_close,
+                    "Keep running when the window is closed",
+                );
+                ui.label(
+                    RichText::new(
+                        "PadForge stays in the notification area so a game keeps receiving input.",
+                    )
+                    .color(TEXT_FAINT)
+                    .size(11.5),
+                );
+                ui.add_space(SPACE_SM);
+                changed |= toggle_row(ui, &mut s.start_minimized, "Start hidden in the tray");
+                changed |= toggle_row(
+                    ui,
+                    &mut s.auto_reapply_profile,
+                    "Re-apply the profile on reconnect",
+                );
+            }
+            // Applied as toggled, not on "Save settings": `auto_reapply_profile`
+            // is the engine's behaviour on a reconnected pad, and a change that
+            // waits for the button is a change that is not really in the app
+            // yet. Autosave persists them in the same pass; the button remains
+            // as the explicit "put it on disk now, again" gesture.
+            if changed {
+                push(ctx);
+            }
         }
         ui.add_space(SPACE_MD);
         divider(ui);
@@ -113,10 +125,7 @@ fn general(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         );
         ui.add_space(SPACE_SM);
         let mut autostart = padcore::settings::autostart_enabled();
-        if ui
-            .checkbox(&mut autostart, "Start PadForge when I log in")
-            .changed()
-        {
+        if toggle_row(ui, &mut autostart, "Start PadForge when I log in") {
             match padcore::settings::set_autostart(autostart) {
                 Ok(()) => {
                     ctx.state.toast(
@@ -171,13 +180,11 @@ fn auto_profiles(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         );
         ui.add_space(SPACE_MD);
         let s = &mut ctx.state.settings;
-        if ui
-            .checkbox(
-                &mut s.auto_profiles_enabled,
-                "Switch profiles by foreground window",
-            )
-            .changed()
-        {
+        if toggle_row(
+            ui,
+            &mut s.auto_profiles_enabled,
+            "Switch profiles by foreground window",
+        ) {
             dirty = true;
         }
         ui.label(
@@ -355,7 +362,6 @@ fn capture_banner(ui: &mut egui::Ui, row: usize, ctx: &mut super::Ctx, keys: &[e
         ctx.state.toast("Hotkey registered", ToastLevel::Success);
     }
 }
-/// Autostart, and the config location.
 /// Logging, live status, and where the files live.
 fn diagnostics(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
     let telemetry = ctx.engine.telemetry();
@@ -363,12 +369,12 @@ fn diagnostics(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         ui.label(RichText::new("Diagnostics").color(TEXT).size(15.0).strong());
         ui.add_space(SPACE_MD);
         let mut logging = ctx.state.settings.logging;
-        if ui.checkbox(&mut logging, "Write a log file").changed() {
+        if toggle_row(ui, &mut logging, "Write a log file") {
             ctx.state.settings.logging = logging;
             push(ctx);
         }
         let mut debug = ctx.state.settings.debug_logging;
-        if ui.checkbox(&mut debug, "Verbose logging").changed() {
+        if toggle_row(ui, &mut debug, "Verbose logging") {
             ctx.state.settings.debug_logging = debug;
             push(ctx);
             ctx.state.toast("Takes effect on restart", ToastLevel::Info);
@@ -639,4 +645,80 @@ fn push(ctx: &mut super::Ctx) {
 fn push_hotkeys(ctx: &mut super::Ctx) {
     let bindings = ctx.state.hotkeys.clone();
     ctx.engine.send(EngineCommand::ApplyHotkeys(bindings));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pages::testing as harness;
+    use egui::vec2;
+
+    /// Two rows forming a tidy pair: the first two cards share a top edge, the
+    /// last two share one, and the vertical gap between the rows is the gap
+    /// the cards get from each other horizontally — at any window height.
+    ///
+    /// The layout this replaced reserved the viewport's spare height for the
+    /// first row, so the second row sat behind a band of empty space that
+    /// grew with the window: invisible at 700px tall was the luck of the
+    /// measured size, and taller windows spaced the rows by whatever room
+    /// was left over. Two heights here mean the regression needs the slope
+    /// right, not one lucky sample. A render is the only way to see that
+    /// answer complete.
+    #[test]
+    fn the_four_cards_form_two_rows_with_no_hollow_between_them() {
+        let ctx = egui::Context::default();
+        for height in [700.0, 900.0] {
+            let rects = harness::page_cards(&ctx, vec2(1100.0, height), draw);
+            assert_eq!(
+                rects.len(),
+                4,
+                "at {height:.0}px tall: expected the four settings cards, got {rects:#?}"
+            );
+
+            let mut by_x: Vec<egui::Rect> = rects.clone();
+            by_x.sort_by_key(|r| (r.top() as i64, r.left() as i64));
+
+            let (r0, r1, r2, r3) = (by_x[0], by_x[1], by_x[2], by_x[3]);
+            // Row 0: the top two cards share a top edge.
+            assert!(
+                (r0.top() - r1.top()).abs() < 1.0,
+                "first row cards are not level: {r0:?} vs {r1:?}"
+            );
+            // Row 1: same, one row down.
+            assert!(
+                (r2.top() - r3.top()).abs() < 1.0,
+                "second row cards are not level: {r2:?} vs {r3:?}"
+            );
+            assert!(
+                r2.top() > r0.bottom() + SPACE_SM - 1.0,
+                "the second row overlaps the first"
+            );
+
+            // The hollow: what separates the rows must be the spacing, not the
+            // stretch of nothing that used to sit here. Painted-rect gaps also
+            // absorb a pixel or two of corner anti-aliasing rounding, hence
+            // the tolerance.
+            let gap_rows = r2.top() - (r0.bottom().max(r1.bottom()));
+            let gap_cols = r1.left() - r0.right();
+            assert!(
+                gap_rows <= gap_cols + 2.0,
+                "at a {height:.0}px-tall window the second row floats \
+                 {gap_rows:.0}px below the first while the cards sit \
+                 {gap_cols:.0}px apart horizontally"
+            );
+        }
+    }
+
+    /// The page must fit *under* one vertical scroll on a normal window rather
+    /// than starting with the second row below the fold.
+    #[test]
+    fn the_two_rows_are_not_one_viewport_tall() {
+        let ctx = egui::Context::default();
+        let rects = harness::page_cards(&ctx, vec2(1100.0, 700.0), draw);
+        let lowest = rects.iter().map(|r| r.bottom()).fold(0.0, f32::max);
+        assert!(
+            lowest < 1500.0,
+            "the page's cards are {lowest:.0}px deep; the second row has slipped below the fold"
+        );
+    }
 }

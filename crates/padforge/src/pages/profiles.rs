@@ -1,6 +1,7 @@
 //! Profiles page: create, edit, and auto-assign per-game configurations.
 use crate::state::ToastLevel;
 use crate::theme::*;
+use crate::widgets;
 use egui::{RichText, Stroke};
 use padcore::engine::EngineCommand;
 use padcore::profile::{AutoProfileRule, Profile};
@@ -132,10 +133,7 @@ fn auto_rules(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
         );
         ui.add_space(SPACE_MD);
         let mut enabled = ctx.state.settings.auto_profiles_enabled;
-        if ui
-            .checkbox(&mut enabled, "Watch the foreground window")
-            .changed()
-        {
+        if widgets::toggle_switch(ui, &mut enabled).changed() {
             ctx.state.settings.auto_profiles_enabled = enabled;
             push_settings(ctx);
         }
@@ -189,7 +187,7 @@ fn auto_rules(ui: &mut egui::Ui, ctx: &mut super::Ctx) {
                         }
                     }
                     let mut on = rule.enabled;
-                    if ui.checkbox(&mut on, "").changed() {
+                    if widgets::toggle_switch(ui, &mut on).changed() {
                         changed = true;
                         if let Some(slot) = ctx.state.store.auto_profiles.get_mut(i) {
                             slot.enabled = on;

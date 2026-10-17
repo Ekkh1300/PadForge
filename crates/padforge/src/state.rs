@@ -182,12 +182,7 @@ pub struct AppState {
     /// anything, and the throttle would be bound to the brake.
     pub learning_rest: Vec<(padcore::wheel::ControlId, f32)>,
 
-    /// True while dragging the main window, so we skip expensive redraws.
-    pub dragging: bool,
-
     /// Expand/collapse state for collapsible sections.
-    pub show_advanced_mapping: bool,
-    pub show_gyro_advanced: bool,
     pub show_lightbar: bool,
 }
 
@@ -221,9 +216,6 @@ impl AppState {
             learning: None,
             learning_started: None,
             learning_rest: Vec::new(),
-            dragging: false,
-            show_advanced_mapping: false,
-            show_gyro_advanced: false,
             show_lightbar: true,
         }
     }

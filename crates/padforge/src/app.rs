@@ -148,13 +148,27 @@ impl App {
         }
     }
 
-    /// Repaint faster when a pad is live; there is no point drawing at 60 Hz
-    /// with nothing attached.
+    /// Set the next repaint deadline.
+    ///
+    /// Three speeds, each backing a different need:
+    /// - connected: the pad's own rate drives the telemetry shown, and a
+    ///   60 Hz budget keeps the traces and the preview honest;
+    /// - hidden: nothing is being drawn, but the tray must stay responsive —
+    ///   a click on "Show" should not sit in an idle queue;
+    /// - idle and visible: slow enough to cost nothing with no pad attached,
+    ///   fast enough that one appearing is noticed before the user does.
+    ///
+    /// `logic` used to call `ctx.request_repaint()` unconditionally, which
+    /// ran the whole layout at 60 Hz whether or not anything was alive to
+    /// look at it — the 250 ms idle interval this was written for never
+    /// actually happened.
     fn schedule_repaint(&self, ctx: &egui::Context) {
         let interval = if self.engine.telemetry().connected {
             Duration::from_millis(16)
+        } else if self.state.hidden {
+            Duration::from_millis(50)
         } else {
-            Duration::from_millis(250)
+            Duration::from_millis(100)
         };
         ctx.request_repaint_after(interval);
     }
@@ -182,7 +196,7 @@ impl eframe::App for App {
         // Called even while hidden, which is exactly when we still need to
         // process tray commands and engine events.
         self.service_tray();
-        ctx.request_repaint();
+        self.schedule_repaint(ctx);
     }
 
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -199,7 +213,8 @@ impl eframe::App for App {
 
         self.state.expire_toasts();
         self.sample_telemetry();
-        self.schedule_repaint(root.ctx());
+        // The repaint deadline is set once per frame in `logic`, which also
+        // runs while hidden; asking again here would only race the first.
 
         self.handle_window_commands(root.ctx());
 
@@ -312,18 +327,11 @@ impl App {
 
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 let paused = self.state.settings.paused;
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new(if paused { ">" } else { "||||" })
-                                .color(if paused { BACKDROP } else { TEXT })
-                                .size(13.0),
-                        )
-                        .fill(if paused { WARNING } else { SURFACE_RAISED })
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .corner_radius(RADIUS_SM)
-                        .min_size(egui::vec2(34.0, 28.0)),
-                    )
+                // Drawn icon (two bars / a triangle) rather than typed
+                // stand-ins: the built-in font set has no pause or play
+                // glyph, which is how this ended up as "||||" and ">" to
+                // begin with.
+                if widgets::pause_play(ui, paused)
                     .on_hover_text("Pause or resume output")
                     .clicked()
                 {
@@ -462,10 +470,24 @@ impl App {
                         .inner_margin(MarginF32::symmetric(SPACE_MD, SPACE_SM))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new("*")
-                                        .color(colour.gamma_multiply(fade))
-                                        .size(10.0),
+                                // A drawn dot, in the level colour, instead of
+                                // the typed "*" every level used to share.
+                                // The ring around it keeps the dot legible on
+                                // the faded-out tail of the toast's life.
+                                let (dot, _) = ui.allocate_exact_size(
+                                    egui::vec2(10.0, 10.0),
+                                    egui::Sense::hover(),
+                                );
+                                let painter = ui.painter();
+                                painter.circle_filled(
+                                    dot.center(),
+                                    3.2,
+                                    colour.gamma_multiply(fade),
+                                );
+                                painter.circle_stroke(
+                                    dot.center(),
+                                    4.6,
+                                    Stroke::new(1.0, colour.gamma_multiply(0.35 * fade)),
                                 );
                                 ui.label(
                                     RichText::new(&toast.text)
