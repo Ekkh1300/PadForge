@@ -125,8 +125,12 @@ fn pump(outbox: &TrayInbox) {
                 ID_NEXT => push(outbox, TrayCommand::NextProfile),
                 ID_RECAL => push(outbox, TrayCommand::Recalibrate),
                 ID_QUIT => {
+                    // Pushed, and then the loop keeps going: the first copy
+                    // owns nothing more than this push, and if the UI cannot
+                    // honour a Quit (a busy shutdown, a slow save) the tray
+                    // must stay alive so clicking it again still does
+                    // something. The thread dies with the process either way.
                     push(outbox, TrayCommand::Quit);
-                    return;
                 }
                 _ => {}
             }

@@ -8,6 +8,7 @@ use egui::{Align, Color32, CornerRadius, RichText, Stroke};
 use padcore::engine::{EngineCommand, EngineHandle};
 
 use crate::pages::{self, Ctx};
+use crate::single::InstanceGuard;
 use crate::state::{AppState, Page, ToastLevel};
 use crate::theme::*;
 use crate::tray::{self, TrayIcon, TrayInbox};
@@ -23,6 +24,14 @@ pub struct App {
     tray: Option<TrayIcon>,
     /// Commands raised by the tray icon's background thread.
     inbox: TrayInbox,
+    /// The single-instance right, held for as long as the app runs. A second
+    /// copy raises this guard's event instead of starting an engine.
+    instance: Option<InstanceGuard>,
+    /// One-shot: the app was asked to start hidden. eframe 0.36 shows the
+    /// window again right after painting its first frame, whatever the
+    /// viewport builder said, so the hiding is redone from inside the app, on
+    /// the frame that gets to run before any of that.
+    hide_on_start: bool,
 }
 
 impl App {
@@ -31,6 +40,8 @@ impl App {
         engine: EngineHandle,
         state: AppState,
         inbox: TrayInbox,
+        instance: Option<InstanceGuard>,
+        hide_on_start: bool,
     ) -> Self {
         crate::theme::install(&cc.egui_ctx);
 
@@ -39,6 +50,8 @@ impl App {
             state,
             tray: None,
             inbox,
+            instance,
+            hide_on_start,
         };
         app.push_initial_commands();
         app
@@ -112,6 +125,11 @@ impl App {
     }
 
     /// Release the pad and persist state, then close.
+    ///
+    /// Runs from `logic` as well as from `ui`, because Quit usually happens
+    /// while the window hides — and only `logic` is called then. Saving twice
+    /// would be cheap but is unwound by the flag-clearing first line: the
+    /// second call only happens if something else set the flag again.
     fn shutdown(&mut self, ctx: &egui::Context) {
         self.state.quit = false;
         self.state.settings.save().ok();
@@ -193,9 +211,39 @@ impl App {
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // See `hide_on_start`: the first frame is the only chance to beat
+        // eframe's paint-time "show the window again" step. Logic still runs
+        // while hidden after this, which is where the tray's commands land.
+        if self.hide_on_start {
+            self.hide_on_start = false;
+            self.state.hidden = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+
         // Called even while hidden, which is exactly when we still need to
         // process tray commands and engine events.
         self.service_tray();
+
+        // A second copy of the app, launched while this one hides in the tray,
+        // asks for the window here: `ui` does not run while hidden, and a
+        // hidden window is precisely the normal state a relaunch meets.
+        if self
+            .instance
+            .as_ref()
+            .is_some_and(|guard| guard.show_requested())
+        {
+            self.state.restore_requested = true;
+        }
+
+        // Quit is honoured here too: a pad sitting in the tray is exactly
+        // where Quit gets clicked, and the old code only checked the flag at
+        // the end of `ui`, which never ran for a hidden window. `shutdown` is
+        // idempotent — it clears the flag first — so the visible path's own
+        // check below stays as a backstop that can no longer double fire.
+        if self.state.quit {
+            self.shutdown(ctx);
+        }
+
         self.schedule_repaint(ctx);
     }
 

@@ -10,6 +10,7 @@ mod app;
 mod cli;
 mod icons;
 mod pages;
+mod single;
 mod state;
 mod theme;
 mod tray;
@@ -83,10 +84,38 @@ fn main() -> eframe::Result<()> {
 
 /// The normal path: a window, and the engine behind it.
 fn run(start_hidden: bool, profile: Option<String>) -> eframe::Result<()> {
+    // The single-instance question comes before anything else, engines
+    // included: a second copy's whole job is to wake the first one's window
+    // and leave, not to spend a second creating a second engine that would
+    // open a second handle on the pad the first one is already reading.
+    let instance = match single::acquire() {
+        single::FirstInstance::Yes(guard) => Some(guard),
+        single::FirstInstance::NotifiedExisting => {
+            // Nothing is printed: a GUI-subsystem process has no console to
+            // hear it, and the wake-up is the whole message.
+            return Ok(());
+        }
+        single::FirstInstance::Unavailable(_reason) => {
+            // Best effort: run unguarded rather than refuse to run at all.
+            // The subscriber is not installed yet, so the reason cannot be
+            // logged from here; it is only ever a kernel-object oddity that
+            // costs the wake-up convenience, not the single-instance
+            // correctness.
+            None
+        }
+    };
+
     // Load persisted state before spawning anything, so the engine's first
     // frame already reflects the user's configuration.
     let settings = Settings::load();
     let mut store = ProfileStore::load();
+
+    // Hiding stays an app decision, not a builder one: eframe 0.36 shows the
+    // window again right after it paints the first frame, whatever the
+    // viewport builder said, so the flag is handed to the app and acted on
+    // from its first frame. Both sources count — the CLI's explicit `--tray`
+    // and the settings toggle that had a checkbox and was never read.
+    let hide_on_start = start_hidden || settings.start_minimized;
 
     init_logging(&settings);
     install_panic_hook();
@@ -132,7 +161,9 @@ fn run(start_hidden: bool, profile: Option<String>) -> eframe::Result<()> {
             width: 64,
             height: 64,
         })
-        .with_visible(!start_hidden);
+        // Hidden as built — the app repeats the request on its first frame,
+        // because eframe's paint-time re-show undoes this one otherwise.
+        .with_visible(!hide_on_start);
 
     let options = eframe::NativeOptions {
         viewport,
@@ -142,9 +173,12 @@ fn run(start_hidden: bool, profile: Option<String>) -> eframe::Result<()> {
     eframe::run_native(
         padcore::APP_NAME,
         options,
-        Box::new(
-            move |cc| Ok(Box::new(App::new(cc, engine, state, inbox)) as Box<dyn eframe::App>),
-        ),
+        Box::new(move |cc| {
+            Ok(
+                Box::new(App::new(cc, engine, state, inbox, instance, hide_on_start))
+                    as Box<dyn eframe::App>,
+            )
+        }),
     )
 }
 
